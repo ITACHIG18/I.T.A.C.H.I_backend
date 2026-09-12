@@ -1729,6 +1729,227 @@ Create StudyMate revision notes from the following lecture material:
 
         }), 500
 
+# ============================================================
+# GENERATE AI SHORT NOTES
+# ============================================================
+
+@app.route(
+    "/api/ai/short-notes",
+    methods=["POST"]
+)
+def generate_short_notes():
+
+    # --------------------------------------------------------
+    # REQUIRE LOGIN
+    # --------------------------------------------------------
+
+    user, error_response = (
+        get_current_user()
+    )
+
+    if error_response:
+
+        return error_response
+
+    # --------------------------------------------------------
+    # CHECK OPENAI
+    # --------------------------------------------------------
+
+    if client is None:
+
+        return jsonify({
+            "error":
+                "OpenAI API key is not configured."
+        }), 500
+
+    # --------------------------------------------------------
+    # GET REQUEST DATA
+    # --------------------------------------------------------
+
+    data = request.get_json()
+
+    if not data:
+
+        return jsonify({
+            "error":
+                "No data was provided."
+        }), 400
+
+    text = str(
+        data.get(
+            "text",
+            ""
+        )
+    ).strip()
+
+    topic = str(
+        data.get(
+            "topic",
+            ""
+        )
+    ).strip()
+
+    # --------------------------------------------------------
+    # VALIDATE STUDY MATERIAL
+    # --------------------------------------------------------
+
+    if not text:
+
+        return jsonify({
+            "error":
+                "Please provide study material first."
+        }), 400
+
+    # --------------------------------------------------------
+    # LIMIT EXTREMELY LARGE INPUT
+    # --------------------------------------------------------
+
+    if len(text) > 100000:
+
+        text = text[:100000]
+
+    # --------------------------------------------------------
+    # AI INSTRUCTIONS
+    # --------------------------------------------------------
+
+    system_prompt = """
+You are StudyMate, an AI study assistant.
+
+Your task is to transform the student's study material
+into SHORT, CLEAR and EASY-TO-REVISE study notes.
+
+IMPORTANT RULES:
+
+1. Use ONLY information contained in the supplied material.
+2. Do not invent facts.
+3. Do not add information from outside the material.
+4. Keep important technical terms.
+5. Keep definitions accurate.
+6. Keep important formulas.
+7. Keep important processes and steps.
+8. Keep important examples when they appear in the material.
+9. Include important comparisons when useful.
+10. Remove unnecessary repetition.
+11. Make the notes significantly shorter than the original material.
+12. Make the notes easy for a university student to revise.
+13. Use clear headings.
+14. Use bullet points where appropriate.
+15. Highlight important terms and concepts.
+16. Do not write a long essay.
+17. Focus on information useful for exams and revision.
+
+The final answer should contain ONLY the study notes.
+
+Do not say:
+"Here are your notes"
+"Sure"
+"Of course"
+or similar introductory phrases.
+
+Start directly with the notes.
+"""
+
+    # --------------------------------------------------------
+    # USER PROMPT
+    # --------------------------------------------------------
+
+    if topic:
+
+        user_prompt = f"""
+Create short revision notes for the following study unit:
+
+UNIT:
+{topic}
+
+STUDY MATERIAL:
+
+{text}
+"""
+
+    else:
+
+        user_prompt = f"""
+Create short revision notes from the following
+study material:
+
+{text}
+"""
+
+    # --------------------------------------------------------
+    # GENERATE NOTES
+    # --------------------------------------------------------
+
+    try:
+
+        print("")
+        print("======================================")
+        print("GENERATING AI SHORT NOTES")
+        print("======================================")
+        print(
+            "Student:",
+            user["email"]
+        )
+        print(
+            "Topic:",
+            topic or "General"
+        )
+        print(
+            "Characters:",
+            len(text)
+        )
+        print("======================================")
+        print("")
+
+        response = client.responses.create(
+
+            model="gpt-5.6-luna",
+
+            instructions=system_prompt,
+
+            input=user_prompt
+
+        )
+
+        notes = (
+            response.output_text
+            .strip()
+        )
+
+        if not notes:
+
+            return jsonify({
+                "error":
+                    "The AI did not return any notes. "
+                    "Please try again."
+            }), 500
+
+        print(
+            "AI short notes generated successfully."
+        )
+
+        return jsonify({
+
+            "notes":
+                notes
+
+        }), 200
+
+    except Exception as error:
+
+        print("")
+        print("======================================")
+        print("AI SHORT NOTES ERROR")
+        print("======================================")
+        print(error)
+        print("")
+
+        return jsonify({
+
+            "error":
+                "Something went wrong while generating "
+                "short notes. Please try again."
+
+        }), 500
 
 # ============================================================
 # GENERATE 30-QUESTION TEST
