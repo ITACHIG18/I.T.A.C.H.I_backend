@@ -1,7 +1,7 @@
-
 import os
 import json
 import uuid
+import re
 
 from datetime import datetime, timedelta, timezone
 
@@ -18,6 +18,7 @@ import fitz
 
 from dotenv import load_dotenv
 from openai import OpenAI
+
 import jwt
 import mysql.connector
 from mysql.connector import Error
@@ -86,9 +87,20 @@ client = None
 
 if OPENAI_API_KEY:
 
-    client = OpenAI(
-        api_key=OPENAI_API_KEY
-    )
+    try:
+
+        client = OpenAI(
+            api_key=OPENAI_API_KEY
+        )
+
+    except Exception as error:
+
+        print(
+            "OpenAI client initialization error:",
+            error
+        )
+
+        client = None
 
 
 # ============================================================
@@ -97,7 +109,15 @@ if OPENAI_API_KEY:
 
 app = Flask(__name__)
 
-CORS(app)
+CORS(
+    app,
+    resources={
+        r"/api/*": {
+            "origins": "*"
+        }
+    },
+    supports_credentials=True
+)
 
 
 # ============================================================
@@ -200,7 +220,7 @@ def database_is_available():
 
 
 # ============================================================
-# HELPER FUNCTIONS
+# FILE VALIDATION
 # ============================================================
 
 def allowed_file(filename):
@@ -513,6 +533,184 @@ def get_current_user():
 
 
 # ============================================================
+# CLEAN AI JSON RESPONSE
+# ============================================================
+
+def extract_json_from_ai_response(text):
+
+    if not text:
+
+        return None
+
+    cleaned = text.strip()
+
+    # Remove markdown code fences
+    cleaned = re.sub(
+        r"^```(?:json)?\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE
+    )
+
+    cleaned = re.sub(
+        r"\s*```$",
+        "",
+        cleaned
+    )
+
+    cleaned = cleaned.strip()
+
+    try:
+
+        return json.loads(
+            cleaned
+        )
+
+    except json.JSONDecodeError:
+
+        pass
+
+    # Try finding a JSON object
+    object_match = re.search(
+        r"\{.*\}",
+        cleaned,
+        re.DOTALL
+    )
+
+    if object_match:
+
+        try:
+
+            return json.loads(
+                object_match.group(0)
+            )
+
+        except json.JSONDecodeError:
+
+            pass
+
+    # Try finding a JSON array
+    array_match = re.search(
+        r"\[.*\]",
+        cleaned,
+        re.DOTALL
+    )
+
+    if array_match:
+
+        try:
+
+            return json.loads(
+                array_match.group(0)
+            )
+
+        except json.JSONDecodeError:
+
+            pass
+
+    return None
+
+
+# ============================================================
+# OPENAI TEXT GENERATION
+# ============================================================
+
+def ask_openai(
+    system_prompt,
+    user_prompt
+):
+
+    if client is None:
+
+        return None, (
+            "OpenAI is not configured on the server. "
+            "Please add OPENAI_API_KEY to your .env file."
+        )
+
+    try:
+
+        response = client.chat.completions.create(
+
+            model="gpt-4o-mini",
+
+            messages=[
+
+                {
+                    "role":
+                        "system",
+
+                    "content":
+                        system_prompt
+                },
+
+                {
+                    "role":
+                        "user",
+
+                    "content":
+                        user_prompt
+                }
+            ],
+
+            temperature=0.4
+        )
+
+        if not response.choices:
+
+            return None, (
+                "OpenAI returned an empty response."
+            )
+
+        content = (
+            response
+            .choices[0]
+            .message
+            .content
+        )
+
+        if not content:
+
+            return None, (
+                "OpenAI returned an empty response."
+            )
+
+        return content, None
+
+    except Exception as error:
+
+        print(
+            "OpenAI request error:",
+            repr(error)
+        )
+
+        error_text = str(
+            error
+        )
+
+        if (
+            "401" in error_text
+            or "Unauthorized" in error_text
+            or "Incorrect API key" in error_text
+        ):
+
+            return None, (
+                "The OpenAI API key configured on the server "
+                "is invalid or unauthorized."
+            )
+
+        if "429" in error_text:
+
+            return None, (
+                "The AI service is temporarily unavailable "
+                "because the request limit was reached."
+            )
+
+        return None, (
+            "The AI service could not process your request."
+        )
+
+
+# ============================================================
 # HOME
 # ============================================================
 
@@ -556,7 +754,12 @@ def health():
         "database":
             "connected"
             if database_status
-            else "disconnected"
+            else "disconnected",
+
+        "openai":
+            "configured"
+            if OPENAI_API_KEY
+            else "not configured"
 
     }), 200
 
@@ -643,10 +846,6 @@ def register():
                 "Password must be at least 8 characters."
         }), 400
 
-    # --------------------------------------------------------
-    # CHECK DATABASE
-    # --------------------------------------------------------
-
     connection = get_db_connection()
 
     if connection is None:
@@ -674,10 +873,6 @@ def register():
 
         existing_user = cursor.fetchone()
 
-        # ----------------------------------------------------
-        # ACCOUNT ALREADY EXISTS
-        # ----------------------------------------------------
-
         if existing_user:
 
             cursor.close()
@@ -687,10 +882,6 @@ def register():
                 "error":
                     "An account with this email already exists."
             }), 409
-
-        # ----------------------------------------------------
-        # CREATE ACCOUNT
-        # ----------------------------------------------------
 
         password_hash = generate_password_hash(
             password
@@ -750,10 +941,6 @@ def register():
                 "Something went wrong while creating your account."
         }), 500
 
-    # --------------------------------------------------------
-    # GET CREATED USER
-    # --------------------------------------------------------
-
     user = get_user_by_id(
         user_id
     )
@@ -764,10 +951,6 @@ def register():
             "error":
                 "Account was created, but the user could not be loaded."
         }), 500
-
-    # --------------------------------------------------------
-    # CREATE JWT
-    # --------------------------------------------------------
 
     token = create_access_token(
         user
@@ -857,10 +1040,6 @@ def login():
                 "Invalid email or password."
         }), 401
 
-    # --------------------------------------------------------
-    # CREATE JWT
-    # --------------------------------------------------------
-
     token = create_access_token(
         user
     )
@@ -936,10 +1115,6 @@ def logout():
     methods=["POST"]
 )
 def upload_pdf():
-
-    # --------------------------------------------------------
-    # REQUIRE LOGIN
-    # --------------------------------------------------------
 
     user, error_response = (
         get_current_user()
@@ -1022,6 +1197,13 @@ def upload_pdf():
 
         document.close()
 
+        if not extracted_text.strip():
+
+            return jsonify({
+                "error":
+                    "The PDF was uploaded, but no readable text was found."
+            }), 400
+
         return jsonify({
 
             "message":
@@ -1067,3 +1249,643 @@ def upload_pdf():
                 "Something went wrong while processing the PDF."
 
         }), 500
+
+
+# ============================================================
+# GENERATE AI STUDY NOTES
+# ============================================================
+
+@app.route(
+    "/api/generate-notes",
+    methods=["POST"]
+)
+def generate_notes():
+
+    # --------------------------------------------------------
+    # REQUIRE LOGIN
+    # --------------------------------------------------------
+
+    user, error_response = (
+        get_current_user()
+    )
+
+    if error_response:
+
+        return error_response
+
+    # --------------------------------------------------------
+    # CHECK OPENAI
+    # --------------------------------------------------------
+
+    if client is None:
+
+        return jsonify({
+            "error":
+                "OpenAI is not configured on the server. "
+                "Please add OPENAI_API_KEY to your .env file."
+        }), 500
+
+    # --------------------------------------------------------
+    # READ REQUEST
+    # --------------------------------------------------------
+
+    data = request.get_json(
+        silent=True
+    )
+
+    if not data:
+
+        return jsonify({
+            "error":
+                "No study material was provided."
+        }), 400
+
+    text = str(
+        data.get(
+            "text",
+            ""
+        )
+    ).strip()
+
+    if not text:
+
+        return jsonify({
+            "error":
+                "Study material is empty."
+        }), 400
+
+    # --------------------------------------------------------
+    # LIMIT EXTREMELY LARGE PDF TEXT
+    # --------------------------------------------------------
+
+    max_characters = 60000
+
+    if len(text) > max_characters:
+
+        text = text[
+            :max_characters
+        ]
+
+    # --------------------------------------------------------
+    # AI PROMPT
+    # --------------------------------------------------------
+
+    system_prompt = """
+You are StudyMate, an expert academic study assistant.
+
+Your job is to turn study material into SHORT, clear,
+high-quality revision notes.
+
+Rules:
+
+1. Use only information contained in the supplied material.
+2. Do not invent facts.
+3. Focus on concepts students are likely to be examined on.
+4. Use clear headings.
+5. Use bullet points where appropriate.
+6. Explain difficult concepts simply.
+7. Include important definitions.
+8. Include formulas only when they appear in the material.
+9. Remove unnecessary repetition.
+10. Make the notes easy to revise quickly.
+11. Do not mention that you are an AI.
+12. Do not add a test or questions.
+"""
+
+    user_prompt = f"""
+Create concise revision notes from the following study material.
+
+STUDY MATERIAL:
+
+{text}
+"""
+
+    # --------------------------------------------------------
+    # CALL OPENAI
+    # --------------------------------------------------------
+
+    notes, ai_error = ask_openai(
+        system_prompt,
+        user_prompt
+    )
+
+    if ai_error:
+
+        return jsonify({
+            "error":
+                ai_error
+        }), 500
+
+    if not notes:
+
+        return jsonify({
+            "error":
+                "The AI did not return any study notes."
+        }), 500
+
+    return jsonify({
+
+        "message":
+            "Study notes generated successfully.",
+
+        "notes":
+            notes
+
+    }), 200
+
+
+# ============================================================
+# GENERATE 30 QUESTION AI TEST
+# ============================================================
+
+@app.route(
+    "/api/generate-test",
+    methods=["POST"]
+)
+def generate_test():
+
+    # --------------------------------------------------------
+    # REQUIRE LOGIN
+    # --------------------------------------------------------
+
+    user, error_response = (
+        get_current_user()
+    )
+
+    if error_response:
+
+        return error_response
+
+    # --------------------------------------------------------
+    # CHECK OPENAI
+    # --------------------------------------------------------
+
+    if client is None:
+
+        return jsonify({
+            "error":
+                "OpenAI is not configured on the server. "
+                "Please add OPENAI_API_KEY to your .env file."
+        }), 500
+
+    # --------------------------------------------------------
+    # READ REQUEST
+    # --------------------------------------------------------
+
+    data = request.get_json(
+        silent=True
+    )
+
+    if not data:
+
+        return jsonify({
+            "error":
+                "No study material was provided."
+        }), 400
+
+    text = str(
+        data.get(
+            "text",
+            ""
+        )
+    ).strip()
+
+    if not text:
+
+        return jsonify({
+            "error":
+                "Study material is empty."
+        }), 400
+
+    previous_questions = data.get(
+        "previousQuestions",
+        []
+    )
+
+    if not isinstance(
+        previous_questions,
+        list
+    ):
+
+        previous_questions = []
+
+    # --------------------------------------------------------
+    # LIMIT MATERIAL SIZE
+    # --------------------------------------------------------
+
+    max_characters = 60000
+
+    if len(text) > max_characters:
+
+        text = text[
+            :max_characters
+        ]
+
+    # --------------------------------------------------------
+    # PREVIOUS QUESTION INFORMATION
+    # --------------------------------------------------------
+
+    previous_text = ""
+
+    if previous_questions:
+
+        cleaned_previous = []
+
+        for question in previous_questions:
+
+            if isinstance(
+                question,
+                str
+            ):
+
+                question = question.strip()
+
+                if question:
+
+                    cleaned_previous.append(
+                        question
+                    )
+
+        if cleaned_previous:
+
+            previous_text = (
+                "\n\n"
+                "DO NOT REPEAT THESE PREVIOUS QUESTIONS:\n"
+                + "\n".join(
+                    f"- {question}"
+                    for question in cleaned_previous[
+                        :50
+                    ]
+                )
+            )
+
+    # --------------------------------------------------------
+    # AI PROMPT
+    # --------------------------------------------------------
+
+    system_prompt = """
+You are StudyMate's examination generator.
+
+Create exactly 30 high-quality multiple-choice questions
+from the supplied study material.
+
+Every question MUST have exactly:
+
+- question
+- options
+- answer
+- explanation
+
+The answer must be the ZERO-BASED option index:
+
+0 = first option
+1 = second option
+2 = third option
+3 = fourth option
+
+Return ONLY valid JSON.
+
+The JSON must have exactly this structure:
+
+{
+  "questions": [
+    {
+      "question": "Question text",
+      "options": [
+        "Option A",
+        "Option B",
+        "Option C",
+        "Option D"
+      ],
+      "answer": 0,
+      "explanation": "Short explanation."
+    }
+  ]
+}
+
+Rules:
+
+1. Generate exactly 30 questions.
+2. Every question must have exactly 4 options.
+3. Only one option can be correct.
+4. The answer must be an integer from 0 to 3.
+5. Questions must be based only on the supplied material.
+6. Do not invent information.
+7. Avoid duplicate questions.
+8. Mix easy, medium and difficult questions.
+9. Test understanding, not just memorization.
+10. Keep explanations concise.
+11. Do not use markdown.
+12. Return JSON only.
+"""
+
+    user_prompt = f"""
+Create exactly 30 multiple-choice questions from this
+study material.
+
+STUDY MATERIAL:
+
+{text}
+
+{previous_text}
+"""
+
+    # --------------------------------------------------------
+    # CALL OPENAI
+    # --------------------------------------------------------
+
+    ai_response, ai_error = ask_openai(
+        system_prompt,
+        user_prompt
+    )
+
+    if ai_error:
+
+        return jsonify({
+            "error":
+                ai_error
+        }), 500
+
+    if not ai_response:
+
+        return jsonify({
+            "error":
+                "The AI did not return a test."
+        }), 500
+
+    # --------------------------------------------------------
+    # PARSE JSON
+    # --------------------------------------------------------
+
+    parsed = extract_json_from_ai_response(
+        ai_response
+    )
+
+    if not parsed:
+
+        print(
+            "Could not parse AI test response:"
+        )
+
+        print(
+            ai_response[:5000]
+        )
+
+        return jsonify({
+            "error":
+                "The AI returned an invalid test format. Please try again."
+        }), 500
+
+    # --------------------------------------------------------
+    # EXTRACT QUESTIONS
+    # --------------------------------------------------------
+
+    if isinstance(
+        parsed,
+        dict
+    ):
+
+        questions = parsed.get(
+            "questions"
+        )
+
+    elif isinstance(
+        parsed,
+        list
+    ):
+
+        questions = parsed
+
+    else:
+
+        questions = None
+
+    if not isinstance(
+        questions,
+        list
+    ):
+
+        return jsonify({
+            "error":
+                "The AI did not return a valid question list."
+        }), 500
+
+    # --------------------------------------------------------
+    # VALIDATE QUESTIONS
+    # --------------------------------------------------------
+
+    valid_questions = []
+
+    for question in questions:
+
+        if not isinstance(
+            question,
+            dict
+        ):
+
+            continue
+
+        question_text = str(
+            question.get(
+                "question",
+                ""
+            )
+        ).strip()
+
+        options = question.get(
+            "options"
+        )
+
+        answer = question.get(
+            "answer"
+        )
+
+        explanation = str(
+            question.get(
+                "explanation",
+                ""
+            )
+        ).strip()
+
+        if not question_text:
+
+            continue
+
+        if not isinstance(
+            options,
+            list
+        ):
+
+            continue
+
+        if len(options) != 4:
+
+            continue
+
+        cleaned_options = []
+
+        for option in options:
+
+            option = str(
+                option
+            ).strip()
+
+            if not option:
+
+                break
+
+            cleaned_options.append(
+                option
+            )
+
+        if len(cleaned_options) != 4:
+
+            continue
+
+        try:
+
+            answer = int(
+                answer
+            )
+
+        except (
+            ValueError,
+            TypeError
+        ):
+
+            continue
+
+        if answer < 0 or answer > 3:
+
+            continue
+
+        valid_questions.append({
+
+            "question":
+                question_text,
+
+            "options":
+                cleaned_options,
+
+            "answer":
+                answer,
+
+            "explanation":
+                explanation
+
+        })
+
+    # --------------------------------------------------------
+    # REMOVE DUPLICATES
+    # --------------------------------------------------------
+
+    unique_questions = []
+
+    seen_questions = set()
+
+    for question in valid_questions:
+
+        normalized = (
+            question["question"]
+            .strip()
+            .lower()
+        )
+
+        if normalized in seen_questions:
+
+            continue
+
+        seen_questions.add(
+            normalized
+        )
+
+        unique_questions.append(
+            question
+        )
+
+    # --------------------------------------------------------
+    # REQUIRE EXACTLY 30
+    # --------------------------------------------------------
+
+    if len(unique_questions) < 30:
+
+        return jsonify({
+            "error":
+                (
+                    f"The AI generated only "
+                    f"{len(unique_questions)} valid questions "
+                    "instead of 30. Please try again."
+                )
+        }), 500
+
+    unique_questions = unique_questions[
+        :30
+    ]
+
+    return jsonify({
+
+        "message":
+            "30-question test generated successfully.",
+
+        "questions":
+            unique_questions
+
+    }), 200
+
+
+# ============================================================
+# ERROR HANDLERS
+# ============================================================
+
+@app.errorhandler(404)
+def not_found(error):
+
+    return jsonify({
+
+        "error":
+            "The requested endpoint was not found.",
+
+        "path":
+            request.path
+
+    }), 404
+
+
+@app.errorhandler(405)
+def method_not_allowed(error):
+
+    return jsonify({
+
+        "error":
+            "The requested method is not allowed."
+
+    }), 405
+
+
+@app.errorhandler(500)
+def internal_server_error(error):
+
+    print(
+        "Unhandled server error:",
+        error
+    )
+
+    return jsonify({
+
+        "error":
+            "An unexpected server error occurred."
+
+    }), 500
+
+
+# ============================================================
+# RUN SERVER
+# ============================================================
+
+if __name__ == "__main__":
+
+    app.run(
+        host="127.0.0.1",
+        port=5000,
+        debug=True
+    )
