@@ -17,7 +17,7 @@ from werkzeug.security import (
 import fitz
 
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import genai
 
 import jwt
 import mysql.connector
@@ -30,8 +30,8 @@ from mysql.connector import Error
 
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv(
-    "OPENAI_API_KEY"
+GEMINI_API_KEY = os.getenv(
+    "GEMINI_API_KEY"
 )
 
 JWT_SECRET_KEY = os.getenv(
@@ -80,27 +80,31 @@ DB_PASSWORD = os.getenv(
 
 
 # ============================================================
-# OPENAI CLIENT
+# GEMINI CLIENT
 # ============================================================
 
-client = None
+gemini_client = None
 
-if OPENAI_API_KEY:
+if GEMINI_API_KEY:
 
     try:
 
-        client = OpenAI(
-            api_key=OPENAI_API_KEY
+        gemini_client = genai.Client(
+            api_key=GEMINI_API_KEY
+        )
+
+        print(
+            "Gemini client initialized successfully."
         )
 
     except Exception as error:
 
         print(
-            "OpenAI client initialization error:",
+            "Gemini client initialization error:",
             error
         )
 
-        client = None
+        gemini_client = None
 
 
 # ============================================================
@@ -612,66 +616,55 @@ def extract_json_from_ai_response(text):
 
 
 # ============================================================
-# OPENAI TEXT GENERATION
+# GEMINI TEXT GENERATION
 # ============================================================
 
-def ask_openai(
+def ask_gemini(
     system_prompt,
     user_prompt
 ):
 
-    if client is None:
+    if gemini_client is None:
 
         return None, (
-            "OpenAI is not configured on the server. "
-            "Please add OPENAI_API_KEY to your .env file."
+            "Gemini is not configured on the server. "
+            "Please add GEMINI_API_KEY to your environment variables."
         )
 
     try:
 
-        response = client.chat.completions.create(
+        full_prompt = f"""
+{system_prompt}
 
-            model="gpt-4o-mini",
+USER REQUEST:
 
-            messages=[
+{user_prompt}
+"""
 
-                {
-                    "role":
-                        "system",
+        response = gemini_client.models.generate_content(
 
-                    "content":
-                        system_prompt
-                },
+            model="gemini-2.5-flash",
 
-                {
-                    "role":
-                        "user",
+            contents=full_prompt
 
-                    "content":
-                        user_prompt
-                }
-            ],
-
-            temperature=0.4
         )
 
-        if not response.choices:
+        if not response:
 
             return None, (
-                "OpenAI returned an empty response."
+                "Gemini returned an empty response."
             )
 
-        content = (
-            response
-            .choices[0]
-            .message
-            .content
+        content = getattr(
+            response,
+            "text",
+            None
         )
 
         if not content:
 
             return None, (
-                "OpenAI returned an empty response."
+                "Gemini returned an empty response."
             )
 
         return content, None
@@ -679,7 +672,7 @@ def ask_openai(
     except Exception as error:
 
         print(
-            "OpenAI request error:",
+            "Gemini request error:",
             repr(error)
         )
 
@@ -689,24 +682,25 @@ def ask_openai(
 
         if (
             "401" in error_text
-            or "Unauthorized" in error_text
-            or "Incorrect API key" in error_text
+            or "403" in error_text
+            or "API key" in error_text
+            or "authentication" in error_text.lower()
         ):
 
             return None, (
-                "The OpenAI API key configured on the server "
+                "The Gemini API key configured on the server "
                 "is invalid or unauthorized."
             )
 
         if "429" in error_text:
 
             return None, (
-                "The AI service is temporarily unavailable "
-                "because the request limit was reached."
+                "The Gemini free-tier request limit has been reached. "
+                "Please wait and try again later."
             )
 
         return None, (
-            "The AI service could not process your request."
+            "The Gemini AI service could not process your request."
         )
 
 
@@ -756,9 +750,9 @@ def health():
             if database_status
             else "disconnected",
 
-        "openai":
+        "gemini":
             "configured"
-            if OPENAI_API_KEY
+            if GEMINI_API_KEY
             else "not configured"
 
     }), 200
@@ -1274,15 +1268,15 @@ def generate_notes():
         return error_response
 
     # --------------------------------------------------------
-    # CHECK OPENAI
+    # CHECK GEMINI
     # --------------------------------------------------------
 
-    if client is None:
+    if gemini_client is None:
 
         return jsonify({
             "error":
-                "OpenAI is not configured on the server. "
-                "Please add OPENAI_API_KEY to your .env file."
+                "Gemini is not configured on the server. "
+                "Please add GEMINI_API_KEY to your environment variables."
         }), 500
 
     # --------------------------------------------------------
@@ -1361,10 +1355,10 @@ STUDY MATERIAL:
 """
 
     # --------------------------------------------------------
-    # CALL OPENAI
+    # CALL GEMINI
     # --------------------------------------------------------
 
-    notes, ai_error = ask_openai(
+    notes, ai_error = ask_gemini(
         system_prompt,
         user_prompt
     )
@@ -1417,15 +1411,15 @@ def generate_test():
         return error_response
 
     # --------------------------------------------------------
-    # CHECK OPENAI
+    # CHECK GEMINI
     # --------------------------------------------------------
 
-    if client is None:
+    if gemini_client is None:
 
         return jsonify({
             "error":
-                "OpenAI is not configured on the server. "
-                "Please add OPENAI_API_KEY to your .env file."
+                "Gemini is not configured on the server. "
+                "Please add GEMINI_API_KEY to your environment variables."
         }), 500
 
     # --------------------------------------------------------
@@ -1591,10 +1585,10 @@ STUDY MATERIAL:
 """
 
     # --------------------------------------------------------
-    # CALL OPENAI
+    # CALL GEMINI
     # --------------------------------------------------------
 
-    ai_response, ai_error = ask_openai(
+    ai_response, ai_error = ask_gemini(
         system_prompt,
         user_prompt
     )
