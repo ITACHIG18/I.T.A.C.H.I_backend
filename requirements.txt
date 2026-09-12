@@ -1,6 +1,8 @@
 Flask
 flask-cors
 PyMuPDF
-openai
 python-dotenv
-gunicorn
+openai
+PyJWT
+Werkzeug
+mysql-connector-python
