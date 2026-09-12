@@ -5,10 +5,9 @@ import re
 
 from datetime import datetime, timedelta, timezone
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 
-from werkzeug.utils import secure_filename
 from werkzeug.security import (
     generate_password_hash,
     check_password_hash
@@ -22,6 +21,8 @@ from google import genai
 import jwt
 import mysql.connector
 from mysql.connector import Error
+
+from io import BytesIO
 
 
 # ============================================================
@@ -125,30 +126,29 @@ CORS(
 
 
 # ============================================================
-# UPLOAD CONFIGURATION
+# PDF CONFIGURATION
 # ============================================================
-
-BASE_DIR = os.path.dirname(
-    os.path.abspath(__file__)
-)
-
-UPLOAD_FOLDER = os.path.join(
-    BASE_DIR,
-    "uploads"
-)
-
-os.makedirs(
-    UPLOAD_FOLDER,
-    exist_ok=True
-)
-
-app.config[
-    "UPLOAD_FOLDER"
-] = UPLOAD_FOLDER
 
 ALLOWED_EXTENSIONS = {
     "pdf"
 }
+
+MAX_PDF_SIZE_MB = int(
+    os.getenv(
+        "MAX_PDF_SIZE_MB",
+        "25"
+    )
+)
+
+MAX_PDF_SIZE_BYTES = (
+    MAX_PDF_SIZE_MB
+    * 1024
+    * 1024
+)
+
+app.config[
+    "MAX_CONTENT_LENGTH"
+] = MAX_PDF_SIZE_BYTES
 
 
 # ============================================================
@@ -178,6 +178,89 @@ def get_db_connection():
         )
 
         return None
+
+
+# ============================================================
+# CREATE PDF STORAGE TABLE
+# ============================================================
+
+def initialize_pdf_storage():
+
+    connection = get_db_connection()
+
+    if connection is None:
+
+        print(
+            "Could not initialize PDF storage: "
+            "database unavailable."
+        )
+
+        return False
+
+    cursor = None
+
+    try:
+
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS study_materials (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                original_filename VARCHAR(255) NOT NULL,
+                stored_filename VARCHAR(255) NOT NULL,
+                file_data LONGBLOB NOT NULL,
+                extracted_text LONGTEXT,
+                page_count INT DEFAULT 0,
+                file_size BIGINT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                INDEX idx_study_materials_user_id (user_id),
+
+                CONSTRAINT fk_study_materials_user
+                    FOREIGN KEY (user_id)
+                    REFERENCES users(id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+
+        connection.commit()
+
+        print(
+            "Permanent PDF storage table is ready."
+        )
+
+        return True
+
+    except Error as error:
+
+        print(
+            "PDF storage table initialization error:",
+            error
+        )
+
+        try:
+            connection.rollback()
+        except Exception:
+            pass
+
+        return False
+
+    finally:
+
+        if cursor:
+
+            try:
+                cursor.close()
+            except Exception:
+                pass
+
+        try:
+            connection.close()
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -548,7 +631,6 @@ def extract_json_from_ai_response(text):
 
     cleaned = text.strip()
 
-    # Remove markdown code fences
     cleaned = re.sub(
         r"^```(?:json)?\s*",
         "",
@@ -574,7 +656,6 @@ def extract_json_from_ai_response(text):
 
         pass
 
-    # Try finding a JSON object
     object_match = re.search(
         r"\{.*\}",
         cleaned,
@@ -593,7 +674,6 @@ def extract_json_from_ai_response(text):
 
             pass
 
-    # Try finding a JSON array
     array_match = re.search(
         r"\[.*\]",
         cleaned,
@@ -1101,7 +1181,7 @@ def logout():
 
 
 # ============================================================
-# PDF UPLOAD
+# PDF UPLOAD — PERMANENT MYSQL STORAGE
 # ============================================================
 
 @app.route(
@@ -1145,30 +1225,54 @@ def upload_pdf():
                 "Only PDF files are allowed."
         }), 400
 
-    original_filename = secure_filename(
+    original_filename = (
         file.filename
+        .strip()
     )
 
-    unique_filename = (
-        f"{uuid.uuid4().hex}_"
-        f"{original_filename}"
-    )
+    if not original_filename:
 
-    file_path = os.path.join(
-        app.config[
-            "UPLOAD_FOLDER"
-        ],
-        unique_filename
-    )
+        return jsonify({
+            "error":
+                "The PDF filename is invalid."
+        }), 400
+
+    # --------------------------------------------------------
+    # READ PDF INTO MEMORY
+    # --------------------------------------------------------
 
     try:
 
-        file.save(
-            file_path
+        pdf_bytes = file.read()
+
+        if not pdf_bytes:
+
+            return jsonify({
+                "error":
+                    "The uploaded PDF is empty."
+            }), 400
+
+        file_size = len(
+            pdf_bytes
         )
 
+        if file_size > MAX_PDF_SIZE_BYTES:
+
+            return jsonify({
+                "error":
+                    (
+                        f"PDF files must be smaller than "
+                        f"{MAX_PDF_SIZE_MB} MB."
+                    )
+            }), 413
+
+        # ----------------------------------------------------
+        # OPEN PDF FROM MEMORY
+        # ----------------------------------------------------
+
         document = fitz.open(
-            file_path
+            stream=pdf_bytes,
+            filetype="pdf"
         )
 
         extracted_text = ""
@@ -1198,25 +1302,6 @@ def upload_pdf():
                     "The PDF was uploaded, but no readable text was found."
             }), 400
 
-        return jsonify({
-
-            "message":
-                "PDF uploaded and processed successfully.",
-
-            "filename":
-                unique_filename,
-
-            "original_filename":
-                original_filename,
-
-            "pages":
-                page_count,
-
-            "text":
-                extracted_text
-
-        }), 200
-
     except Exception as error:
 
         print(
@@ -1224,25 +1309,590 @@ def upload_pdf():
             error
         )
 
-        if os.path.exists(
-            file_path
-        ):
-
-            try:
-
-                os.remove(
-                    file_path
-                )
-
-            except Exception:
-                pass
-
         return jsonify({
 
             "error":
                 "Something went wrong while processing the PDF."
 
         }), 500
+
+    # --------------------------------------------------------
+    # STORE PDF PERMANENTLY IN MYSQL
+    # --------------------------------------------------------
+
+    connection = get_db_connection()
+
+    if connection is None:
+
+        return jsonify({
+            "error":
+                "The PDF was processed, but the database is unavailable."
+        }), 500
+
+    cursor = None
+
+    try:
+
+        cursor = connection.cursor()
+
+        stored_filename = (
+            f"{uuid.uuid4().hex}_"
+            f"{original_filename}"
+        )
+
+        cursor.execute(
+            """
+            INSERT INTO study_materials (
+                user_id,
+                original_filename,
+                stored_filename,
+                file_data,
+                extracted_text,
+                page_count,
+                file_size
+            )
+            VALUES (
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s
+            )
+            """,
+            (
+                user["id"],
+                original_filename,
+                stored_filename,
+                pdf_bytes,
+                extracted_text,
+                page_count,
+                file_size
+            )
+        )
+
+        pdf_id = cursor.lastrowid
+
+        connection.commit()
+
+        return jsonify({
+
+            "message":
+                "PDF uploaded and saved permanently.",
+
+            "id":
+                pdf_id,
+
+            "filename":
+                stored_filename,
+
+            "original_filename":
+                original_filename,
+
+            "pages":
+                page_count,
+
+            "file_size":
+                file_size,
+
+            "text":
+                extracted_text
+
+        }), 200
+
+    except Error as error:
+
+        print(
+            "Permanent PDF storage error:",
+            error
+        )
+
+        try:
+            connection.rollback()
+        except Exception:
+            pass
+
+        return jsonify({
+
+            "error":
+                "The PDF could not be saved permanently."
+
+        }), 500
+
+    finally:
+
+        if cursor:
+
+            try:
+                cursor.close()
+            except Exception:
+                pass
+
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
+# ============================================================
+# GET SAVED PDFs
+# ============================================================
+
+@app.route(
+    "/api/pdfs",
+    methods=["GET"]
+)
+def get_saved_pdfs():
+
+    user, error_response = (
+        get_current_user()
+    )
+
+    if error_response:
+
+        return error_response
+
+    connection = get_db_connection()
+
+    if connection is None:
+
+        return jsonify({
+            "error":
+                "Could not connect to the database."
+        }), 500
+
+    cursor = None
+
+    try:
+
+        cursor = connection.cursor(
+            dictionary=True
+        )
+
+        cursor.execute(
+            """
+            SELECT
+                id,
+                original_filename,
+                stored_filename,
+                page_count,
+                file_size,
+                created_at
+            FROM study_materials
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            """,
+            (user["id"],)
+        )
+
+        rows = cursor.fetchall()
+
+        pdfs = []
+
+        for row in rows:
+
+            created_at = row.get(
+                "created_at"
+            )
+
+            if isinstance(
+                created_at,
+                datetime
+            ):
+
+                created_at = created_at.isoformat()
+
+            pdfs.append({
+
+                "id":
+                    row["id"],
+
+                "original_filename":
+                    row["original_filename"],
+
+                "filename":
+                    row["stored_filename"],
+
+                "pages":
+                    row["page_count"],
+
+                "file_size":
+                    row["file_size"],
+
+                "created_at":
+                    created_at
+
+            })
+
+        return jsonify({
+
+            "pdfs":
+                pdfs
+
+        }), 200
+
+    except Error as error:
+
+        print(
+            "Get saved PDFs error:",
+            error
+        )
+
+        return jsonify({
+            "error":
+                "Could not load your saved PDFs."
+        }), 500
+
+    finally:
+
+        if cursor:
+
+            try:
+                cursor.close()
+            except Exception:
+                pass
+
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
+# ============================================================
+# GET SINGLE SAVED PDF
+# ============================================================
+
+@app.route(
+    "/api/pdfs/<int:pdf_id>",
+    methods=["GET"]
+)
+def get_saved_pdf(pdf_id):
+
+    user, error_response = (
+        get_current_user()
+    )
+
+    if error_response:
+
+        return error_response
+
+    connection = get_db_connection()
+
+    if connection is None:
+
+        return jsonify({
+            "error":
+                "Could not connect to the database."
+        }), 500
+
+    cursor = None
+
+    try:
+
+        cursor = connection.cursor(
+            dictionary=True
+        )
+
+        cursor.execute(
+            """
+            SELECT
+                id,
+                original_filename,
+                stored_filename,
+                file_data,
+                extracted_text,
+                page_count,
+                file_size,
+                created_at
+            FROM study_materials
+            WHERE id = %s
+              AND user_id = %s
+            LIMIT 1
+            """,
+            (
+                pdf_id,
+                user["id"]
+            )
+        )
+
+        pdf = cursor.fetchone()
+
+        if not pdf:
+
+            return jsonify({
+                "error":
+                    "PDF not found."
+            }), 404
+
+        pdf_bytes = pdf[
+            "file_data"
+        ]
+
+        return send_file(
+
+            BytesIO(
+                pdf_bytes
+            ),
+
+            mimetype="application/pdf",
+
+            as_attachment=False,
+
+            download_name=pdf[
+                "original_filename"
+            ]
+
+        )
+
+    except Error as error:
+
+        print(
+            "Get PDF error:",
+            error
+        )
+
+        return jsonify({
+            "error":
+                "Could not retrieve the PDF."
+        }), 500
+
+    finally:
+
+        if cursor:
+
+            try:
+                cursor.close()
+            except Exception:
+                pass
+
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
+# ============================================================
+# GET SAVED PDF INFORMATION + TEXT
+# ============================================================
+
+@app.route(
+    "/api/pdfs/<int:pdf_id>/details",
+    methods=["GET"]
+)
+def get_saved_pdf_details(pdf_id):
+
+    user, error_response = (
+        get_current_user()
+    )
+
+    if error_response:
+
+        return error_response
+
+    connection = get_db_connection()
+
+    if connection is None:
+
+        return jsonify({
+            "error":
+                "Could not connect to the database."
+        }), 500
+
+    cursor = None
+
+    try:
+
+        cursor = connection.cursor(
+            dictionary=True
+        )
+
+        cursor.execute(
+            """
+            SELECT
+                id,
+                original_filename,
+                stored_filename,
+                extracted_text,
+                page_count,
+                file_size,
+                created_at
+            FROM study_materials
+            WHERE id = %s
+              AND user_id = %s
+            LIMIT 1
+            """,
+            (
+                pdf_id,
+                user["id"]
+            )
+        )
+
+        pdf = cursor.fetchone()
+
+        if not pdf:
+
+            return jsonify({
+                "error":
+                    "PDF not found."
+            }), 404
+
+        created_at = pdf.get(
+            "created_at"
+        )
+
+        if isinstance(
+            created_at,
+            datetime
+        ):
+
+            created_at = created_at.isoformat()
+
+        return jsonify({
+
+            "id":
+                pdf["id"],
+
+            "original_filename":
+                pdf["original_filename"],
+
+            "filename":
+                pdf["stored_filename"],
+
+            "text":
+                pdf["extracted_text"],
+
+            "pages":
+                pdf["page_count"],
+
+            "file_size":
+                pdf["file_size"],
+
+            "created_at":
+                created_at
+
+        }), 200
+
+    except Error as error:
+
+        print(
+            "Get PDF details error:",
+            error
+        )
+
+        return jsonify({
+            "error":
+                "Could not load the PDF details."
+        }), 500
+
+    finally:
+
+        if cursor:
+
+            try:
+                cursor.close()
+            except Exception:
+                pass
+
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
+# ============================================================
+# DELETE SAVED PDF
+# ============================================================
+
+@app.route(
+    "/api/pdfs/<int:pdf_id>",
+    methods=["DELETE"]
+)
+def delete_saved_pdf(pdf_id):
+
+    user, error_response = (
+        get_current_user()
+    )
+
+    if error_response:
+
+        return error_response
+
+    connection = get_db_connection()
+
+    if connection is None:
+
+        return jsonify({
+            "error":
+                "Could not connect to the database."
+        }), 500
+
+    cursor = None
+
+    try:
+
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            DELETE FROM study_materials
+            WHERE id = %s
+              AND user_id = %s
+            """,
+            (
+                pdf_id,
+                user["id"]
+            )
+        )
+
+        deleted_rows = cursor.rowcount
+
+        connection.commit()
+
+        if deleted_rows == 0:
+
+            return jsonify({
+                "error":
+                    "PDF not found."
+            }), 404
+
+        return jsonify({
+
+            "message":
+                "PDF deleted successfully."
+
+        }), 200
+
+    except Error as error:
+
+        print(
+            "Delete PDF error:",
+            error
+        )
+
+        try:
+            connection.rollback()
+        except Exception:
+            pass
+
+        return jsonify({
+            "error":
+                "Could not delete the PDF."
+        }), 500
+
+    finally:
+
+        if cursor:
+
+            try:
+                cursor.close()
+            except Exception:
+                pass
+
+        try:
+            connection.close()
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -1255,10 +1905,6 @@ def upload_pdf():
 )
 def generate_notes():
 
-    # --------------------------------------------------------
-    # REQUIRE LOGIN
-    # --------------------------------------------------------
-
     user, error_response = (
         get_current_user()
     )
@@ -1267,10 +1913,6 @@ def generate_notes():
 
         return error_response
 
-    # --------------------------------------------------------
-    # CHECK GEMINI
-    # --------------------------------------------------------
-
     if gemini_client is None:
 
         return jsonify({
@@ -1278,10 +1920,6 @@ def generate_notes():
                 "Gemini is not configured on the server. "
                 "Please add GEMINI_API_KEY to your environment variables."
         }), 500
-
-    # --------------------------------------------------------
-    # READ REQUEST
-    # --------------------------------------------------------
 
     data = request.get_json(
         silent=True
@@ -1308,10 +1946,6 @@ def generate_notes():
                 "Study material is empty."
         }), 400
 
-    # --------------------------------------------------------
-    # LIMIT EXTREMELY LARGE PDF TEXT
-    # --------------------------------------------------------
-
     max_characters = 60000
 
     if len(text) > max_characters:
@@ -1319,10 +1953,6 @@ def generate_notes():
         text = text[
             :max_characters
         ]
-
-    # --------------------------------------------------------
-    # AI PROMPT
-    # --------------------------------------------------------
 
     system_prompt = """
 You are StudyMate, an expert academic study assistant.
@@ -1353,10 +1983,6 @@ STUDY MATERIAL:
 
 {text}
 """
-
-    # --------------------------------------------------------
-    # CALL GEMINI
-    # --------------------------------------------------------
 
     notes, ai_error = ask_gemini(
         system_prompt,
@@ -1398,10 +2024,6 @@ STUDY MATERIAL:
 )
 def generate_test():
 
-    # --------------------------------------------------------
-    # REQUIRE LOGIN
-    # --------------------------------------------------------
-
     user, error_response = (
         get_current_user()
     )
@@ -1410,10 +2032,6 @@ def generate_test():
 
         return error_response
 
-    # --------------------------------------------------------
-    # CHECK GEMINI
-    # --------------------------------------------------------
-
     if gemini_client is None:
 
         return jsonify({
@@ -1421,10 +2039,6 @@ def generate_test():
                 "Gemini is not configured on the server. "
                 "Please add GEMINI_API_KEY to your environment variables."
         }), 500
-
-    # --------------------------------------------------------
-    # READ REQUEST
-    # --------------------------------------------------------
 
     data = request.get_json(
         silent=True
@@ -1463,10 +2077,6 @@ def generate_test():
 
         previous_questions = []
 
-    # --------------------------------------------------------
-    # LIMIT MATERIAL SIZE
-    # --------------------------------------------------------
-
     max_characters = 60000
 
     if len(text) > max_characters:
@@ -1474,10 +2084,6 @@ def generate_test():
         text = text[
             :max_characters
         ]
-
-    # --------------------------------------------------------
-    # PREVIOUS QUESTION INFORMATION
-    # --------------------------------------------------------
 
     previous_text = ""
 
@@ -1512,10 +2118,6 @@ def generate_test():
                     ]
                 )
             )
-
-    # --------------------------------------------------------
-    # AI PROMPT
-    # --------------------------------------------------------
 
     system_prompt = """
 You are StudyMate's examination generator.
@@ -1584,10 +2186,6 @@ STUDY MATERIAL:
 {previous_text}
 """
 
-    # --------------------------------------------------------
-    # CALL GEMINI
-    # --------------------------------------------------------
-
     ai_response, ai_error = ask_gemini(
         system_prompt,
         user_prompt
@@ -1607,10 +2205,6 @@ STUDY MATERIAL:
                 "The AI did not return a test."
         }), 500
 
-    # --------------------------------------------------------
-    # PARSE JSON
-    # --------------------------------------------------------
-
     parsed = extract_json_from_ai_response(
         ai_response
     )
@@ -1629,10 +2223,6 @@ STUDY MATERIAL:
             "error":
                 "The AI returned an invalid test format. Please try again."
         }), 500
-
-    # --------------------------------------------------------
-    # EXTRACT QUESTIONS
-    # --------------------------------------------------------
 
     if isinstance(
         parsed,
@@ -1663,10 +2253,6 @@ STUDY MATERIAL:
             "error":
                 "The AI did not return a valid question list."
         }), 500
-
-    # --------------------------------------------------------
-    # VALIDATE QUESTIONS
-    # --------------------------------------------------------
 
     valid_questions = []
 
@@ -1769,10 +2355,6 @@ STUDY MATERIAL:
 
         })
 
-    # --------------------------------------------------------
-    # REMOVE DUPLICATES
-    # --------------------------------------------------------
-
     unique_questions = []
 
     seen_questions = set()
@@ -1796,10 +2378,6 @@ STUDY MATERIAL:
         unique_questions.append(
             question
         )
-
-    # --------------------------------------------------------
-    # REQUIRE EXACTLY 30
-    # --------------------------------------------------------
 
     if len(unique_questions) < 30:
 
@@ -1825,6 +2403,24 @@ STUDY MATERIAL:
             unique_questions
 
     }), 200
+
+
+# ============================================================
+# HANDLE LARGE UPLOADS
+# ============================================================
+
+@app.errorhandler(413)
+def request_entity_too_large(error):
+
+    return jsonify({
+
+        "error":
+            (
+                f"The uploaded file is too large. "
+                f"Maximum PDF size is {MAX_PDF_SIZE_MB} MB."
+            )
+
+    }), 413
 
 
 # ============================================================
@@ -1870,6 +2466,22 @@ def internal_server_error(error):
             "An unexpected server error occurred."
 
     }), 500
+
+
+# ============================================================
+# INITIALIZE DATABASE TABLES
+# ============================================================
+
+try:
+
+    initialize_pdf_storage()
+
+except Exception as error:
+
+    print(
+        "Startup PDF storage initialization error:",
+        error
+    )
 
 
 # ============================================================
