@@ -180,6 +180,16 @@ def handle_options(path):
 ALLOWED_EXTENSIONS = {
     "pdf"
 }
+def allowed_file(filename):
+    if not filename:
+        return False
+
+    if "." not in filename:
+        return False
+
+    extension = filename.rsplit(".", 1)[1].lower()
+
+    return extension in ALLOWED_EXTENSIONS
 
 MAX_PDF_SIZE_MB = int(
     os.getenv(
