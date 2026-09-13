@@ -44,11 +44,32 @@ JWT_EXPIRATION_MINUTES = int(
 # MYSQL CONFIGURATION
 # ============================================================
 
-DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
-DB_PORT = int(os.getenv("DB_PORT", "3306"))
-DB_NAME = os.getenv("DB_NAME", "studymate_db")
-DB_USER = os.getenv("DB_USER", "root")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+DB_HOST = os.getenv(
+    "DB_HOST",
+    "127.0.0.1"
+)
+
+DB_PORT = int(
+    os.getenv(
+        "DB_PORT",
+        "3306"
+    )
+)
+
+DB_NAME = os.getenv(
+    "DB_NAME",
+    "studymate_db"
+)
+
+DB_USER = os.getenv(
+    "DB_USER",
+    "root"
+)
+
+DB_PASSWORD = os.getenv(
+    "DB_PASSWORD",
+    ""
+)
 
 
 # ============================================================
@@ -67,17 +88,28 @@ if GEMINI_API_KEY:
         gemini_client = genai.Client(
             api_key=GEMINI_API_KEY
         )
-        print("Gemini client initialized successfully.")
-        print("Gemini model:", GEMINI_MODEL)
+
+        print(
+            "Gemini client initialized successfully."
+        )
+
+        print(
+            "Gemini model:",
+            GEMINI_MODEL
+        )
 
     except Exception as error:
         print(
             "Gemini client initialization error:",
             repr(error)
         )
+
         gemini_client = None
+
 else:
-    print("WARNING: GEMINI_API_KEY is not configured.")
+    print(
+        "WARNING: GEMINI_API_KEY is not configured."
+    )
 
 
 # ============================================================
@@ -86,32 +118,83 @@ else:
 
 app = Flask(__name__)
 
+
+# ============================================================
+# CORS
+# ============================================================
+
 CORS(
     app,
     resources={
         r"/api/*": {
-            "origins": "*"
+            "origins": "*",
+            "methods": [
+                "GET",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+                "OPTIONS"
+            ],
+            "allow_headers": [
+                "Content-Type",
+                "Authorization"
+            ],
+            "expose_headers": [
+                "Content-Type",
+                "Content-Disposition"
+            ]
         }
     },
-    supports_credentials=True
+    supports_credentials=False
 )
+
+
+# Explicit OPTIONS support
+@app.route(
+    "/api/<path:path>",
+    methods=["OPTIONS"]
+)
+def handle_options(path):
+    response = jsonify({
+        "message": "CORS preflight successful."
+    })
+
+    response.status_code = 200
+
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = (
+        "Content-Type, Authorization"
+    )
+    response.headers["Access-Control-Allow-Methods"] = (
+        "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    )
+
+    return response
 
 
 # ============================================================
 # PDF CONFIGURATION
 # ============================================================
 
-ALLOWED_EXTENSIONS = {"pdf"}
+ALLOWED_EXTENSIONS = {
+    "pdf"
+}
 
 MAX_PDF_SIZE_MB = int(
-    os.getenv("MAX_PDF_SIZE_MB", "25")
+    os.getenv(
+        "MAX_PDF_SIZE_MB",
+        "25"
+    )
 )
 
 MAX_PDF_SIZE_BYTES = (
     MAX_PDF_SIZE_MB * 1024 * 1024
 )
 
-app.config["MAX_CONTENT_LENGTH"] = MAX_PDF_SIZE_BYTES
+app.config[
+    "MAX_CONTENT_LENGTH"
+] = MAX_PDF_SIZE_BYTES
 
 
 # ============================================================
@@ -119,7 +202,9 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_PDF_SIZE_BYTES
 # ============================================================
 
 def get_db_connection():
+
     try:
+
         connection = mysql.connector.connect(
             host=DB_HOST,
             port=DB_PORT,
@@ -132,14 +217,17 @@ def get_db_connection():
         return connection
 
     except Error as error:
+
         print(
             "MySQL connection error:",
             repr(error)
         )
+
         return None
 
 
 def database_is_available():
+
     connection = get_db_connection()
 
     if connection is None:
@@ -148,96 +236,30 @@ def database_is_available():
     cursor = None
 
     try:
+
         cursor = connection.cursor()
 
-        cursor.execute("SELECT 1")
+        cursor.execute(
+            "SELECT 1"
+        )
+
         cursor.fetchone()
 
         return True
 
     except Error as error:
+
         print(
             "Database health check error:",
             repr(error)
         )
-        return False
-
-    finally:
-        if cursor:
-            try:
-                cursor.close()
-            except Exception:
-                pass
-
-        try:
-            connection.close()
-        except Exception:
-            pass
-
-
-# ============================================================
-# PERMANENT PDF STORAGE TABLE
-# ============================================================
-
-def initialize_pdf_storage():
-    connection = get_db_connection()
-
-    if connection is None:
-        print(
-            "Could not initialize PDF storage: "
-            "database unavailable."
-        )
-        return False
-
-    cursor = None
-
-    try:
-        cursor = connection.cursor()
-
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS study_materials (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
-                original_filename VARCHAR(255) NOT NULL,
-                stored_filename VARCHAR(255) NOT NULL,
-                file_data LONGBLOB NOT NULL,
-                extracted_text LONGTEXT,
-                page_count INT DEFAULT 0,
-                file_size BIGINT DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-                INDEX idx_study_materials_user_id (user_id),
-
-                CONSTRAINT fk_study_materials_user
-                    FOREIGN KEY (user_id)
-                    REFERENCES users(id)
-                    ON DELETE CASCADE
-            )
-            """
-        )
-
-        connection.commit()
-
-        print("Permanent PDF storage table is ready.")
-
-        return True
-
-    except Error as error:
-        print(
-            "PDF storage table initialization error:",
-            repr(error)
-        )
-
-        try:
-            connection.rollback()
-        except Exception:
-            pass
 
         return False
 
     finally:
+
         if cursor:
+
             try:
                 cursor.close()
             except Exception:
@@ -250,240 +272,43 @@ def initialize_pdf_storage():
 
 
 # ============================================================
-# FILE VALIDATION
+# HEALTH CHECK
 # ============================================================
 
-def allowed_file(filename):
-    return (
-        "." in filename
-        and filename.rsplit(".", 1)[1].lower()
-        in ALLOWED_EXTENSIONS
-    )
+@app.route(
+    "/",
+    methods=["GET"]
+)
+def home():
+
+    return jsonify({
+        "message": "StudyMate backend is running.",
+        "status": "online"
+    }), 200
 
 
-# ============================================================
-# JWT
-# ============================================================
+@app.route(
+    "/api/health",
+    methods=["GET"]
+)
+def health():
 
-def create_access_token(user):
-    now = datetime.now(timezone.utc)
+    return jsonify({
+        "status": "ok",
+        "database": (
+            "connected"
+            if database_is_available()
+            else "unavailable"
+        ),
+        "gemini": (
+            "configured"
+            if gemini_client is not None
+            else "not configured"
+        ),
+        "model": GEMINI_MODEL
+    }), 200
 
-    expiration = now + timedelta(
-        minutes=JWT_EXPIRATION_MINUTES
-    )
-
-    payload = {
-        "sub": str(user["id"]),
-        "email": user["email"],
-        "name": user["name"],
-        "iat": now,
-        "exp": expiration
-    }
-
-    return jwt.encode(
-        payload,
-        JWT_SECRET_KEY,
-        algorithm="HS256"
-    )
-
-
-def get_user_by_id(user_id):
-    connection = get_db_connection()
-
-    if connection is None:
-        return None
-
-    cursor = None
-
-    try:
-        cursor = connection.cursor(dictionary=True)
-
-        cursor.execute(
-            """
-            SELECT
-                id,
-                name,
-                email,
-                password_hash,
-                email_verified,
-                verification_code,
-                verification_expires,
-                created_at
-            FROM users
-            WHERE id = %s
-            LIMIT 1
-            """,
-            (user_id,)
-        )
-
-        return cursor.fetchone()
-
-    except Error as error:
-        print(
-            "Find user error:",
-            repr(error)
-        )
-        return None
-
-    finally:
-        if cursor:
-            try:
-                cursor.close()
-            except Exception:
-                pass
-
-        try:
-            connection.close()
-        except Exception:
-            pass
-
-
-def get_user_by_email(email):
-    connection = get_db_connection()
-
-    if connection is None:
-        return None
-
-    cursor = None
-
-    try:
-        cursor = connection.cursor(dictionary=True)
-
-        cursor.execute(
-            """
-            SELECT
-                id,
-                name,
-                email,
-                password_hash,
-                email_verified,
-                verification_code,
-                verification_expires,
-                created_at
-            FROM users
-            WHERE email = %s
-            LIMIT 1
-            """,
-            (email,)
-        )
-
-        return cursor.fetchone()
-
-    except Error as error:
-        print(
-            "Find user by email error:",
-            repr(error)
-        )
-        return None
-
-    finally:
-        if cursor:
-            try:
-                cursor.close()
-            except Exception:
-                pass
-
-        try:
-            connection.close()
-        except Exception:
-            pass
-
-def public_user(user):
-    created_at = user.get("created_at")
-
-    if isinstance(created_at, datetime):
-        created_at = created_at.isoformat()
-
-    return {
-        "id": user["id"],
-        "name": user["name"],
-        "email": user["email"],
-        "email_verified": True,
-        "created_at": created_at
-    }
-
-
-def get_current_user():
-    authorization = request.headers.get("Authorization")
-
-    if not authorization:
-        return None, (
-            jsonify({
-                "error":
-                    "Authorization token is required."
-            }),
-            401
-        )
-
-    parts = authorization.split()
-
-    if len(parts) != 2:
-        return None, (
-            jsonify({
-                "error":
-                    "Invalid authorization header."
-            }),
-            401
-        )
-
-    if parts[0].lower() != "bearer":
-        return None, (
-            jsonify({
-                "error":
-                    "Authorization must use Bearer token."
-            }),
-            401
-        )
-
-    try:
-        payload = jwt.decode(
-            parts[1],
-            JWT_SECRET_KEY,
-            algorithms=["HS256"]
-        )
-
-        user_id = payload.get("sub")
-
-        if not user_id:
-            return None, (
-                jsonify({
-                    "error": "Invalid token."
-                }),
-                401
-            )
-
-        user = get_user_by_id(user_id)
-
-        if not user:
-            return None, (
-                jsonify({
-                    "error":
-                        "User account was not found."
-                }),
-                401
-            )
-
-        return user, None
-
-    except jwt.ExpiredSignatureError:
-        return None, (
-            jsonify({
-                "error":
-                    "Your session has expired. Please log in again."
-            }),
-            401
-        )
-
-    except jwt.InvalidTokenError:
-        return None, (
-            jsonify({
-                "error":
-                    "Invalid or expired authentication token."
-            }),
-            401
-        )
-
-    import os
+import os
 import json
 import uuid
 import re
@@ -529,11 +354,32 @@ JWT_EXPIRATION_MINUTES = int(
 # MYSQL CONFIGURATION
 # ============================================================
 
-DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
-DB_PORT = int(os.getenv("DB_PORT", "3306"))
-DB_NAME = os.getenv("DB_NAME", "studymate_db")
-DB_USER = os.getenv("DB_USER", "root")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "")
+DB_HOST = os.getenv(
+    "DB_HOST",
+    "127.0.0.1"
+)
+
+DB_PORT = int(
+    os.getenv(
+        "DB_PORT",
+        "3306"
+    )
+)
+
+DB_NAME = os.getenv(
+    "DB_NAME",
+    "studymate_db"
+)
+
+DB_USER = os.getenv(
+    "DB_USER",
+    "root"
+)
+
+DB_PASSWORD = os.getenv(
+    "DB_PASSWORD",
+    ""
+)
 
 
 # ============================================================
@@ -552,17 +398,28 @@ if GEMINI_API_KEY:
         gemini_client = genai.Client(
             api_key=GEMINI_API_KEY
         )
-        print("Gemini client initialized successfully.")
-        print("Gemini model:", GEMINI_MODEL)
+
+        print(
+            "Gemini client initialized successfully."
+        )
+
+        print(
+            "Gemini model:",
+            GEMINI_MODEL
+        )
 
     except Exception as error:
         print(
             "Gemini client initialization error:",
             repr(error)
         )
+
         gemini_client = None
+
 else:
-    print("WARNING: GEMINI_API_KEY is not configured.")
+    print(
+        "WARNING: GEMINI_API_KEY is not configured."
+    )
 
 
 # ============================================================
@@ -571,32 +428,83 @@ else:
 
 app = Flask(__name__)
 
+
+# ============================================================
+# CORS
+# ============================================================
+
 CORS(
     app,
     resources={
         r"/api/*": {
-            "origins": "*"
+            "origins": "*",
+            "methods": [
+                "GET",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE",
+                "OPTIONS"
+            ],
+            "allow_headers": [
+                "Content-Type",
+                "Authorization"
+            ],
+            "expose_headers": [
+                "Content-Type",
+                "Content-Disposition"
+            ]
         }
     },
-    supports_credentials=True
+    supports_credentials=False
 )
+
+
+# Explicit OPTIONS support
+@app.route(
+    "/api/<path:path>",
+    methods=["OPTIONS"]
+)
+def handle_options(path):
+    response = jsonify({
+        "message": "CORS preflight successful."
+    })
+
+    response.status_code = 200
+
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = (
+        "Content-Type, Authorization"
+    )
+    response.headers["Access-Control-Allow-Methods"] = (
+        "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    )
+
+    return response
 
 
 # ============================================================
 # PDF CONFIGURATION
 # ============================================================
 
-ALLOWED_EXTENSIONS = {"pdf"}
+ALLOWED_EXTENSIONS = {
+    "pdf"
+}
 
 MAX_PDF_SIZE_MB = int(
-    os.getenv("MAX_PDF_SIZE_MB", "25")
+    os.getenv(
+        "MAX_PDF_SIZE_MB",
+        "25"
+    )
 )
 
 MAX_PDF_SIZE_BYTES = (
     MAX_PDF_SIZE_MB * 1024 * 1024
 )
 
-app.config["MAX_CONTENT_LENGTH"] = MAX_PDF_SIZE_BYTES
+app.config[
+    "MAX_CONTENT_LENGTH"
+] = MAX_PDF_SIZE_BYTES
 
 
 # ============================================================
@@ -604,7 +512,9 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_PDF_SIZE_BYTES
 # ============================================================
 
 def get_db_connection():
+
     try:
+
         connection = mysql.connector.connect(
             host=DB_HOST,
             port=DB_PORT,
@@ -617,14 +527,17 @@ def get_db_connection():
         return connection
 
     except Error as error:
+
         print(
             "MySQL connection error:",
             repr(error)
         )
+
         return None
 
 
 def database_is_available():
+
     connection = get_db_connection()
 
     if connection is None:
@@ -633,22 +546,30 @@ def database_is_available():
     cursor = None
 
     try:
+
         cursor = connection.cursor()
 
-        cursor.execute("SELECT 1")
+        cursor.execute(
+            "SELECT 1"
+        )
+
         cursor.fetchone()
 
         return True
 
     except Error as error:
+
         print(
             "Database health check error:",
             repr(error)
         )
+
         return False
 
     finally:
+
         if cursor:
+
             try:
                 cursor.close()
             except Exception:
@@ -661,326 +582,59 @@ def database_is_available():
 
 
 # ============================================================
-# PERMANENT PDF STORAGE TABLE
+# HEALTH CHECK
 # ============================================================
 
-def initialize_pdf_storage():
-    connection = get_db_connection()
+@app.route(
+    "/",
+    methods=["GET"]
+)
+def home():
 
-    if connection is None:
-        print(
-            "Could not initialize PDF storage: "
-            "database unavailable."
-        )
-        return False
+    return jsonify({
+        "message": "StudyMate backend is running.",
+        "status": "online"
+    }), 200
 
-    cursor = None
 
-    try:
-        cursor = connection.cursor()
+@app.route(
+    "/api/health",
+    methods=["GET"]
+)
+def health():
 
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS study_materials (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                user_id INT NOT NULL,
-                original_filename VARCHAR(255) NOT NULL,
-                stored_filename VARCHAR(255) NOT NULL,
-                file_data LONGBLOB NOT NULL,
-                extracted_text LONGTEXT,
-                page_count INT DEFAULT 0,
-                file_size BIGINT DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-                INDEX idx_study_materials_user_id (user_id),
-
-                CONSTRAINT fk_study_materials_user
-                    FOREIGN KEY (user_id)
-                    REFERENCES users(id)
-                    ON DELETE CASCADE
-            )
-            """
-        )
-
-        connection.commit()
-
-        print("Permanent PDF storage table is ready.")
-
-        return True
-
-    except Error as error:
-        print(
-            "PDF storage table initialization error:",
-            repr(error)
-        )
-
-        try:
-            connection.rollback()
-        except Exception:
-            pass
-
-        return False
-
-    finally:
-        if cursor:
-            try:
-                cursor.close()
-            except Exception:
-                pass
-
-        try:
-            connection.close()
-        except Exception:
-            pass
-
+    return jsonify({
+        "status": "ok",
+        "database": (
+            "connected"
+            if database_is_available()
+            else "unavailable"
+        ),
+        "gemini": (
+            "configured"
+            if gemini_client is not None
+            else "not configured"
+        ),
+        "model": GEMINI_MODEL
+    }), 200
 
 # ============================================================
-# FILE VALIDATION
-# ============================================================
-
-def allowed_file(filename):
-    return (
-        "." in filename
-        and filename.rsplit(".", 1)[1].lower()
-        in ALLOWED_EXTENSIONS
-    )
-
-
-# ============================================================
-# JWT
-# ============================================================
-
-def create_access_token(user):
-    now = datetime.now(timezone.utc)
-
-    expiration = now + timedelta(
-        minutes=JWT_EXPIRATION_MINUTES
-    )
-
-    payload = {
-        "sub": str(user["id"]),
-        "email": user["email"],
-        "name": user["name"],
-        "iat": now,
-        "exp": expiration
-    }
-
-    return jwt.encode(
-        payload,
-        JWT_SECRET_KEY,
-        algorithm="HS256"
-    )
-
-
-def get_user_by_id(user_id):
-    connection = get_db_connection()
-
-    if connection is None:
-        return None
-
-    cursor = None
-
-    try:
-        cursor = connection.cursor(dictionary=True)
-
-        cursor.execute(
-            """
-            SELECT
-                id,
-                name,
-                email,
-                password_hash,
-                email_verified,
-                verification_code,
-                verification_expires,
-                created_at
-            FROM users
-            WHERE id = %s
-            LIMIT 1
-            """,
-            (user_id,)
-        )
-
-        return cursor.fetchone()
-
-    except Error as error:
-        print(
-            "Find user error:",
-            repr(error)
-        )
-        return None
-
-    finally:
-        if cursor:
-            try:
-                cursor.close()
-            except Exception:
-                pass
-
-        try:
-            connection.close()
-        except Exception:
-            pass
-
-
-def get_user_by_email(email):
-    connection = get_db_connection()
-
-    if connection is None:
-        return None
-
-    cursor = None
-
-    try:
-        cursor = connection.cursor(dictionary=True)
-
-        cursor.execute(
-            """
-            SELECT
-                id,
-                name,
-                email,
-                password_hash,
-                email_verified,
-                verification_code,
-                verification_expires,
-                created_at
-            FROM users
-            WHERE email = %s
-            LIMIT 1
-            """,
-            (email,)
-        )
-
-        return cursor.fetchone()
-
-    except Error as error:
-        print(
-            "Find user by email error:",
-            repr(error)
-        )
-        return None
-
-    finally:
-        if cursor:
-            try:
-                cursor.close()
-            except Exception:
-                pass
-
-            try:
-                connection.close()
-            except Exception:
-                pass
-
-
-def public_user(user):
-    created_at = user.get("created_at")
-
-    if isinstance(created_at, datetime):
-        created_at = created_at.isoformat()
-
-    return {
-        "id": user["id"],
-        "name": user["name"],
-        "email": user["email"],
-        "email_verified": True,
-        "created_at": created_at
-    }
-
-
-def get_current_user():
-    authorization = request.headers.get("Authorization")
-
-    if not authorization:
-        return None, (
-            jsonify({
-                "error":
-                    "Authorization token is required."
-            }),
-            401
-        )
-
-    parts = authorization.split()
-
-    if len(parts) != 2:
-        return None, (
-            jsonify({
-                "error":
-                    "Invalid authorization header."
-            }),
-            401
-        )
-
-    if parts[0].lower() != "bearer":
-        return None, (
-            jsonify({
-                "error":
-                    "Authorization must use Bearer token."
-            }),
-            401
-        )
-
-    try:
-        payload = jwt.decode(
-            parts[1],
-            JWT_SECRET_KEY,
-            algorithms=["HS256"]
-        )
-
-        user_id = payload.get("sub")
-
-        if not user_id:
-            return None, (
-                jsonify({
-                    "error": "Invalid token."
-                }),
-                401
-            )
-
-        user = get_user_by_id(user_id)
-
-        if not user:
-            return None, (
-                jsonify({
-                    "error":
-                        "User account was not found."
-                }),
-                401
-            )
-
-        return user, None
-
-    except jwt.ExpiredSignatureError:
-        return None, (
-            jsonify({
-                "error":
-                    "Your session has expired. Please log in again."
-            }),
-            401
-        )
-
-    except jwt.InvalidTokenError:
-        return None, (
-            jsonify({
-                "error":
-                    "Invalid or expired authentication token."
-            }),
-            401
-        )
-
-    # ============================================================
 # UPLOAD PDF
 # ============================================================
 
-@app.route("/api/upload-pdf", methods=["POST"])
+@app.route(
+    "/api/upload-pdf",
+    methods=["POST"]
+)
 def upload_pdf():
+
     user, error_response = get_current_user()
 
     if error_response:
         return error_response
 
     if "file" not in request.files:
+
         return jsonify({
             "error":
                 "No file was uploaded."
@@ -989,31 +643,42 @@ def upload_pdf():
     file = request.files["file"]
 
     if not file.filename:
+
         return jsonify({
             "error":
                 "No file was selected."
         }), 400
 
-    if not allowed_file(file.filename):
+    if not allowed_file(
+        file.filename
+    ):
+
         return jsonify({
             "error":
                 "Only PDF files are allowed."
         }), 400
 
-    original_filename = file.filename.strip()
+    original_filename = (
+        file.filename.strip()
+    )
 
     try:
+
         pdf_bytes = file.read()
 
         if not pdf_bytes:
+
             return jsonify({
                 "error":
                     "The uploaded PDF is empty."
             }), 400
 
-        file_size = len(pdf_bytes)
+        file_size = len(
+            pdf_bytes
+        )
 
         if file_size > MAX_PDF_SIZE_BYTES:
+
             return jsonify({
                 "error":
                     f"PDF files must be smaller than "
@@ -1028,28 +693,37 @@ def upload_pdf():
         extracted_parts = []
 
         for page in document:
+
             page_text = page.get_text()
 
             if page_text:
+
                 extracted_parts.append(
                     page_text
                 )
 
-        page_count = len(document)
+        page_count = len(
+            document
+        )
 
         document.close()
 
-        extracted_text = "\n\n".join(
-            extracted_parts
-        ).strip()
+        extracted_text = (
+            "\n\n".join(
+                extracted_parts
+            )
+            .strip()
+        )
 
         if not extracted_text:
+
             return jsonify({
                 "error":
                     "The PDF was uploaded, but no readable text was found."
             }), 400
 
     except Exception as error:
+
         print(
             "PDF processing error:",
             repr(error)
@@ -1063,6 +737,7 @@ def upload_pdf():
     connection = get_db_connection()
 
     if connection is None:
+
         return jsonify({
             "error":
                 "The PDF was processed, but the database is unavailable."
@@ -1071,6 +746,7 @@ def upload_pdf():
     cursor = None
 
     try:
+
         cursor = connection.cursor()
 
         stored_filename = (
@@ -1089,7 +765,15 @@ def upload_pdf():
                 page_count,
                 file_size
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s
+            )
             """,
             (
                 user["id"],
@@ -1124,6 +808,7 @@ def upload_pdf():
         }), 200
 
     except Error as error:
+
         print(
             "Permanent PDF storage error:",
             repr(error)
@@ -1140,7 +825,9 @@ def upload_pdf():
         }), 500
 
     finally:
+
         if cursor:
+
             try:
                 cursor.close()
             except Exception:
@@ -1156,8 +843,12 @@ def upload_pdf():
 # GET SAVED PDFs
 # ============================================================
 
-@app.route("/api/pdfs", methods=["GET"])
+@app.route(
+    "/api/pdfs",
+    methods=["GET"]
+)
 def get_saved_pdfs():
+
     user, error_response = get_current_user()
 
     if error_response:
@@ -1166,6 +857,7 @@ def get_saved_pdfs():
     connection = get_db_connection()
 
     if connection is None:
+
         return jsonify({
             "error":
                 "Could not connect to the database."
@@ -1174,6 +866,7 @@ def get_saved_pdfs():
     cursor = None
 
     try:
+
         cursor = connection.cursor(
             dictionary=True
         )
@@ -1191,7 +884,9 @@ def get_saved_pdfs():
             WHERE user_id = %s
             ORDER BY created_at DESC
             """,
-            (user["id"],)
+            (
+                user["id"],
+            )
         )
 
         rows = cursor.fetchall()
@@ -1199,10 +894,19 @@ def get_saved_pdfs():
         pdfs = []
 
         for row in rows:
-            created_at = row.get("created_at")
 
-            if isinstance(created_at, datetime):
-                created_at = created_at.isoformat()
+            created_at = row.get(
+                "created_at"
+            )
+
+            if isinstance(
+                created_at,
+                datetime
+            ):
+
+                created_at = (
+                    created_at.isoformat()
+                )
 
             pdfs.append({
                 "id":
@@ -1220,10 +924,12 @@ def get_saved_pdfs():
             })
 
         return jsonify({
-            "pdfs": pdfs
+            "pdfs":
+                pdfs
         }), 200
 
     except Error as error:
+
         print(
             "Get saved PDFs error:",
             repr(error)
@@ -1235,7 +941,9 @@ def get_saved_pdfs():
         }), 500
 
     finally:
+
         if cursor:
+
             try:
                 cursor.close()
             except Exception:
@@ -1251,8 +959,12 @@ def get_saved_pdfs():
 # GET SINGLE PDF
 # ============================================================
 
-@app.route("/api/pdfs/<int:pdf_id>", methods=["GET"])
+@app.route(
+    "/api/pdfs/<int:pdf_id>",
+    methods=["GET"]
+)
 def get_saved_pdf(pdf_id):
+
     user, error_response = get_current_user()
 
     if error_response:
@@ -1261,6 +973,7 @@ def get_saved_pdf(pdf_id):
     connection = get_db_connection()
 
     if connection is None:
+
         return jsonify({
             "error":
                 "Could not connect to the database."
@@ -1269,6 +982,7 @@ def get_saved_pdf(pdf_id):
     cursor = None
 
     try:
+
         cursor = connection.cursor(
             dictionary=True
         )
@@ -1293,19 +1007,25 @@ def get_saved_pdf(pdf_id):
         pdf = cursor.fetchone()
 
         if not pdf:
+
             return jsonify({
                 "error":
                     "PDF not found."
             }), 404
 
         return send_file(
-            BytesIO(pdf["file_data"]),
+            BytesIO(
+                pdf["file_data"]
+            ),
             mimetype="application/pdf",
             as_attachment=False,
-            download_name=pdf["original_filename"]
+            download_name=pdf[
+                "original_filename"
+            ]
         )
 
     except Error as error:
+
         print(
             "Get PDF error:",
             repr(error)
@@ -1317,7 +1037,9 @@ def get_saved_pdf(pdf_id):
         }), 500
 
     finally:
+
         if cursor:
+
             try:
                 cursor.close()
             except Exception:
@@ -1337,7 +1059,10 @@ def get_saved_pdf(pdf_id):
     "/api/pdfs/<int:pdf_id>/details",
     methods=["GET"]
 )
-def get_saved_pdf_details(pdf_id):
+def get_saved_pdf_details(
+    pdf_id
+):
+
     user, error_response = get_current_user()
 
     if error_response:
@@ -1346,6 +1071,7 @@ def get_saved_pdf_details(pdf_id):
     connection = get_db_connection()
 
     if connection is None:
+
         return jsonify({
             "error":
                 "Could not connect to the database."
@@ -1354,6 +1080,7 @@ def get_saved_pdf_details(pdf_id):
     cursor = None
 
     try:
+
         cursor = connection.cursor(
             dictionary=True
         )
@@ -1382,15 +1109,24 @@ def get_saved_pdf_details(pdf_id):
         pdf = cursor.fetchone()
 
         if not pdf:
+
             return jsonify({
                 "error":
                     "PDF not found."
             }), 404
 
-        created_at = pdf.get("created_at")
+        created_at = pdf.get(
+            "created_at"
+        )
 
-        if isinstance(created_at, datetime):
-            created_at = created_at.isoformat()
+        if isinstance(
+            created_at,
+            datetime
+        ):
+
+            created_at = (
+                created_at.isoformat()
+            )
 
         return jsonify({
             "id":
@@ -1410,6 +1146,7 @@ def get_saved_pdf_details(pdf_id):
         }), 200
 
     except Error as error:
+
         print(
             "Get PDF details error:",
             repr(error)
@@ -1421,7 +1158,9 @@ def get_saved_pdf_details(pdf_id):
         }), 500
 
     finally:
+
         if cursor:
+
             try:
                 cursor.close()
             except Exception:
@@ -1441,7 +1180,10 @@ def get_saved_pdf_details(pdf_id):
     "/api/pdfs/<int:pdf_id>",
     methods=["DELETE"]
 )
-def delete_saved_pdf(pdf_id):
+def delete_saved_pdf(
+    pdf_id
+):
+
     user, error_response = get_current_user()
 
     if error_response:
@@ -1450,6 +1192,7 @@ def delete_saved_pdf(pdf_id):
     connection = get_db_connection()
 
     if connection is None:
+
         return jsonify({
             "error":
                 "Could not connect to the database."
@@ -1458,6 +1201,7 @@ def delete_saved_pdf(pdf_id):
     cursor = None
 
     try:
+
         cursor = connection.cursor()
 
         cursor.execute(
@@ -1477,6 +1221,7 @@ def delete_saved_pdf(pdf_id):
         connection.commit()
 
         if deleted_rows == 0:
+
             return jsonify({
                 "error":
                     "PDF not found."
@@ -1488,6 +1233,7 @@ def delete_saved_pdf(pdf_id):
         }), 200
 
     except Error as error:
+
         print(
             "Delete saved PDF error:",
             repr(error)
@@ -1504,7 +1250,9 @@ def delete_saved_pdf(pdf_id):
         }), 500
 
     finally:
+
         if cursor:
+
             try:
                 cursor.close()
             except Exception:
@@ -1515,8 +1263,209 @@ def delete_saved_pdf(pdf_id):
         except Exception:
             pass
 
+# ============================================================
+# GEMINI HELPER
+# ============================================================
 
-    # ============================================================
+def ask_gemini(
+    system_prompt,
+    user_prompt,
+    json_mode=False
+):
+
+    if gemini_client is None:
+
+        return None, (
+            "Gemini is not configured on the server."
+        )
+
+    full_prompt = (
+        system_prompt
+        + "\n\n"
+        + user_prompt
+    )
+
+    try:
+
+        if json_mode:
+
+            config = types.GenerateContentConfig(
+                temperature=0.4,
+                response_mime_type="application/json"
+            )
+
+        else:
+
+            config = types.GenerateContentConfig(
+                temperature=0.5
+            )
+
+        response = (
+            gemini_client
+            .models
+            .generate_content(
+                model=GEMINI_MODEL,
+                contents=full_prompt,
+                config=config
+            )
+        )
+
+        content = getattr(
+            response,
+            "text",
+            None
+        )
+
+        if content is None:
+
+            content = ""
+
+        content = str(
+            content
+        ).strip()
+
+        if not content:
+
+            print(
+                "Gemini returned an empty response."
+            )
+
+            return None, (
+                "The AI returned an empty response. "
+                "Please try again."
+            )
+
+        return content, None
+
+    except Exception as error:
+
+        error_text = str(
+            error
+        )
+
+        print(
+            "Gemini API error:",
+            repr(error)
+        )
+
+        if (
+            "429" in error_text
+            or "RESOURCE_EXHAUSTED" in error_text
+        ):
+
+            return None, (
+                "Gemini's free AI limit has been reached "
+                "temporarily. Please wait a little and try again."
+            )
+
+        if (
+            "401" in error_text
+            or "403" in error_text
+            or "PERMISSION_DENIED" in error_text
+        ):
+
+            return None, (
+                "Gemini rejected the API request. "
+                "Please check the GEMINI_API_KEY on Render."
+            )
+
+        if (
+            "404" in error_text
+            or "NOT_FOUND" in error_text
+        ):
+
+            return None, (
+                "The configured Gemini model is unavailable. "
+                f"Current model: {GEMINI_MODEL}"
+            )
+
+        return None, (
+            "The Gemini AI service could not process "
+            "your request. Please try again."
+        )
+
+
+# ============================================================
+# EXTRACT JSON FROM AI RESPONSE
+# ============================================================
+
+def extract_json_from_ai_response(
+    response
+):
+
+    if not response:
+        return None
+
+    text = str(
+        response
+    ).strip()
+
+    # Remove markdown fences.
+    text = re.sub(
+        r"^```(?:json)?\s*",
+        "",
+        text,
+        flags=re.IGNORECASE
+    )
+
+    text = re.sub(
+        r"\s*```$",
+        "",
+        text
+    )
+
+    text = text.strip()
+
+    # Direct parse.
+    try:
+
+        return json.loads(
+            text
+        )
+
+    except Exception:
+        pass
+
+    # Try object.
+    object_match = re.search(
+        r"\{.*\}",
+        text,
+        flags=re.DOTALL
+    )
+
+    if object_match:
+
+        try:
+
+            return json.loads(
+                object_match.group(0)
+            )
+
+        except Exception:
+            pass
+
+    # Try array.
+    array_match = re.search(
+        r"\[.*\]",
+        text,
+        flags=re.DOTALL
+    )
+
+    if array_match:
+
+        try:
+
+            return json.loads(
+                array_match.group(0)
+            )
+
+        except Exception:
+            pass
+
+    return None
+
+
+# ============================================================
 # GENERATE AI STUDY NOTES
 # ============================================================
 
@@ -1525,37 +1474,45 @@ def delete_saved_pdf(pdf_id):
     methods=["POST"]
 )
 def generate_notes():
+
     user, error_response = get_current_user()
 
     if error_response:
         return error_response
 
     if gemini_client is None:
+
         return jsonify({
             "error":
                 "Gemini is not configured on the server. "
                 "Please add GEMINI_API_KEY to your environment variables."
         }), 500
 
-    data = request.get_json(silent=True)
+    data = request.get_json(
+        silent=True
+    )
 
     if not data:
+
         return jsonify({
             "error":
                 "No study material was provided."
         }), 400
 
     text = str(
-        data.get("text", "")
+        data.get(
+            "text",
+            ""
+        )
     ).strip()
 
     if not text:
+
         return jsonify({
             "error":
                 "Study material is empty."
         }), 400
 
-    # Keep requests within a reasonable size.
     text = text[:60000]
 
     system_prompt = """
@@ -1595,11 +1552,14 @@ STUDY MATERIAL:
     )
 
     if ai_error:
+
         return jsonify({
-            "error": ai_error
+            "error":
+                ai_error
         }), 500
 
     if not notes:
+
         return jsonify({
             "error":
                 "The AI did not return any study notes."
@@ -1612,31 +1572,51 @@ STUDY MATERIAL:
             notes
     }), 200
 
-
 # ============================================================
 # VALIDATE QUESTION
 # ============================================================
 
-def clean_test_question(question):
-    if not isinstance(question, dict):
+def clean_test_question(
+    question
+):
+
+    if not isinstance(
+        question,
+        dict
+    ):
+
         return None
 
     question_text = str(
-        question.get("question", "")
+        question.get(
+            "question",
+            ""
+        )
     ).strip()
 
-    options = question.get("options")
+    options = question.get(
+        "options"
+    )
 
-    answer = question.get("answer")
+    answer = question.get(
+        "answer"
+    )
 
     explanation = str(
-        question.get("explanation", "")
+        question.get(
+            "explanation",
+            ""
+        )
     ).strip()
 
     if not question_text:
         return None
 
-    if not isinstance(options, list):
+    if not isinstance(
+        options,
+        list
+    ):
+
         return None
 
     if len(options) != 4:
@@ -1645,31 +1625,49 @@ def clean_test_question(question):
     cleaned_options = []
 
     for option in options:
-        option = str(option).strip()
+
+        option = str(
+            option
+        ).strip()
 
         if not option:
             return None
 
-        cleaned_options.append(option)
+        cleaned_options.append(
+            option
+        )
 
     try:
-        answer = int(answer)
-    except (ValueError, TypeError):
+
+        answer = int(
+            answer
+        )
+
+    except (
+        ValueError,
+        TypeError
+    ):
+
         return None
 
     if answer < 0 or answer > 3:
+
         return None
 
     return {
-        "question": question_text,
-        "options": cleaned_options,
-        "answer": answer,
-        "explanation": explanation
+        "question":
+            question_text,
+        "options":
+            cleaned_options,
+        "answer":
+            answer,
+        "explanation":
+            explanation
     }
 
 
 # ============================================================
-# GENERATE ONE BATCH OF TEST QUESTIONS
+# GENERATE ONE TEST BATCH
 # ============================================================
 
 def generate_test_batch(
@@ -1677,6 +1675,7 @@ def generate_test_batch(
     previous_text,
     number_of_questions
 ):
+
     system_prompt = f"""
 You are StudyMate's examination generator.
 
@@ -1684,9 +1683,9 @@ Generate EXACTLY {number_of_questions}
 high-quality multiple-choice questions from the
 supplied study material.
 
-Return ONLY a valid JSON object.
+Return ONLY valid JSON.
 
-Required structure:
+The JSON must have exactly this structure:
 
 {{
   "questions": [
@@ -1707,21 +1706,22 @@ Required structure:
 Rules:
 
 1. Generate exactly {number_of_questions} questions.
-2. Every question has exactly 4 options.
-3. Only one option is correct.
-4. "answer" MUST be an integer from 0 to 3.
-5. 0 means the first option.
-6. 1 means the second option.
-7. 2 means the third option.
-8. 3 means the fourth option.
-9. Use ONLY information in the supplied study material.
-10. Do not invent facts.
-11. Do not duplicate questions.
+2. Every question must have exactly 4 options.
+3. Only one option must be correct.
+4. answer must be an integer from 0 to 3.
+5. 0 means option A.
+6. 1 means option B.
+7. 2 means option C.
+8. 3 means option D.
+9. Use ONLY information in the study material.
+10. Never invent facts.
+11. Never repeat a question.
 12. Mix easy, medium and difficult questions.
-13. Test understanding, application and important facts.
-14. Keep explanations concise.
+13. Test understanding and important facts.
+14. Keep explanations short.
 15. Do not use markdown.
-16. Return JSON only.
+16. Do not add comments outside the JSON.
+17. Return valid JSON only.
 """
 
     user_prompt = f"""
@@ -1741,6 +1741,7 @@ STUDY MATERIAL:
     )
 
     if ai_error:
+
         return None, ai_error
 
     parsed = extract_json_from_ai_response(
@@ -1748,11 +1749,17 @@ STUDY MATERIAL:
     )
 
     if not parsed:
+
         print(
-            "Could not parse structured Gemini test response."
+            "Could not parse Gemini test response."
         )
+
         print(
-            response[:5000]
+            "Gemini response:"
+        )
+
+        print(
+            str(response)[:5000]
         )
 
         return None, (
@@ -1760,17 +1767,32 @@ STUDY MATERIAL:
             "Please try again."
         )
 
-    if isinstance(parsed, dict):
+    if isinstance(
+        parsed,
+        dict
+    ):
+
         questions = parsed.get(
             "questions",
             []
         )
-    elif isinstance(parsed, list):
+
+    elif isinstance(
+        parsed,
+        list
+    ):
+
         questions = parsed
+
     else:
+
         questions = []
 
-    if not isinstance(questions, list):
+    if not isinstance(
+        questions,
+        list
+    ):
+
         return None, (
             "The AI did not return a valid question list."
         )
@@ -1778,10 +1800,16 @@ STUDY MATERIAL:
     valid_questions = []
 
     for item in questions:
-        cleaned = clean_test_question(item)
+
+        cleaned = clean_test_question(
+            item
+        )
 
         if cleaned:
-            valid_questions.append(cleaned)
+
+            valid_questions.append(
+                cleaned
+            )
 
     return valid_questions, None
 
@@ -1795,31 +1823,40 @@ STUDY MATERIAL:
     methods=["POST"]
 )
 def generate_test():
+
     user, error_response = get_current_user()
 
     if error_response:
         return error_response
 
     if gemini_client is None:
+
         return jsonify({
             "error":
                 "Gemini is not configured on the server. "
                 "Please add GEMINI_API_KEY to your environment variables."
         }), 500
 
-    data = request.get_json(silent=True)
+    data = request.get_json(
+        silent=True
+    )
 
     if not data:
+
         return jsonify({
             "error":
                 "No study material was provided."
         }), 400
 
     text = str(
-        data.get("text", "")
+        data.get(
+            "text",
+            ""
+        )
     ).strip()
 
     if not text:
+
         return jsonify({
             "error":
                 "Study material is empty."
@@ -1830,44 +1867,54 @@ def generate_test():
         []
     )
 
-    if not isinstance(previous_questions, list):
+    if not isinstance(
+        previous_questions,
+        list
+    ):
+
         previous_questions = []
 
-    # Limit the material sent to Gemini.
     text = text[:60000]
-
-    # --------------------------------------------------------
-    # PREVIOUS QUESTIONS
-    # --------------------------------------------------------
 
     cleaned_previous = []
 
     for question in previous_questions:
-        if isinstance(question, str):
+
+        if isinstance(
+            question,
+            str
+        ):
+
             question = question.strip()
 
             if question:
-                cleaned_previous.append(question)
+
+                cleaned_previous.append(
+                    question
+                )
 
     previous_text = ""
 
     if cleaned_previous:
+
         previous_text = (
             "\n\n"
             "DO NOT REPEAT THESE PREVIOUS QUESTIONS:\n"
-            + "\n".join(
+            +
+            "\n".join(
                 f"- {question}"
-                for question in cleaned_previous[:50]
+                for question
+                in cleaned_previous[:50]
             )
         )
-
-    # --------------------------------------------------------
-    # FIRST ATTEMPT
-    # --------------------------------------------------------
 
     print(
         "Starting AI test generation..."
     )
+
+    # ========================================================
+    # FIRST BATCH
+    # ========================================================
 
     questions, ai_error = generate_test_batch(
         text,
@@ -1876,30 +1923,35 @@ def generate_test():
     )
 
     if ai_error:
+
         print(
             "First test generation attempt failed:",
             ai_error
         )
 
         return jsonify({
-            "error": ai_error
+            "error":
+                ai_error
         }), 500
 
     if not questions:
+
         return jsonify({
             "error":
                 "The AI did not generate any valid questions. "
                 "Please try again."
         }), 500
 
-    # --------------------------------------------------------
+    # ========================================================
     # REMOVE DUPLICATES
-    # --------------------------------------------------------
+    # ========================================================
 
     unique_questions = []
+
     seen_questions = set()
 
     for question in questions:
+
         normalized = re.sub(
             r"\s+",
             " ",
@@ -1911,9 +1963,13 @@ def generate_test():
         if normalized in seen_questions:
             continue
 
-        seen_questions.add(normalized)
+        seen_questions.add(
+            normalized
+        )
 
-        unique_questions.append(question)
+        unique_questions.append(
+            question
+        )
 
     print(
         "First attempt produced",
@@ -1921,12 +1977,16 @@ def generate_test():
         "unique valid questions."
     )
 
-    # --------------------------------------------------------
-    # RETRY IF GEMINI RETURNED FEWER THAN 30
-    # --------------------------------------------------------
+    # ========================================================
+    # RETRY IF NECESSARY
+    # ========================================================
 
     if len(unique_questions) < 30:
-        missing = 30 - len(unique_questions)
+
+        missing = (
+            30
+            - len(unique_questions)
+        )
 
         print(
             "Generating",
@@ -1935,8 +1995,10 @@ def generate_test():
         )
 
         existing_text = (
-            "\n\nDO NOT REPEAT THESE QUESTIONS:\n"
-            + "\n".join(
+            "\n\n"
+            "DO NOT REPEAT THESE QUESTIONS:\n"
+            +
+            "\n".join(
                 f"- {q['question']}"
                 for q in unique_questions
             )
@@ -1951,13 +2013,18 @@ def generate_test():
         )
 
         if retry_error:
+
             print(
                 "Retry failed:",
                 retry_error
             )
 
         else:
-            for question in retry_questions or []:
+
+            for question in (
+                retry_questions or []
+            ):
+
                 normalized = re.sub(
                     r"\s+",
                     " ",
@@ -1969,14 +2036,20 @@ def generate_test():
                 if normalized in seen_questions:
                     continue
 
-                seen_questions.add(normalized)
-                unique_questions.append(question)
+                seen_questions.add(
+                    normalized
+                )
 
-    # --------------------------------------------------------
-    # FINAL VALIDATION
-    # --------------------------------------------------------
+                unique_questions.append(
+                    question
+                )
+
+    # ========================================================
+    # FINAL RESULT
+    # ========================================================
 
     if len(unique_questions) < 30:
+
         print(
             "Final question count:",
             len(unique_questions)
@@ -1989,10 +2062,14 @@ def generate_test():
                     "questions this time. It generated "
                     f"{len(unique_questions)} valid questions. "
                     "Please click Start test again."
-                )
+                ),
+            "generated":
+                len(unique_questions)
         }), 500
 
-    unique_questions = unique_questions[:30]
+    unique_questions = (
+        unique_questions[:30]
+    )
 
     print(
         "SUCCESS: 30-question test generated."
@@ -2011,6 +2088,7 @@ def generate_test():
 
 @app.errorhandler(413)
 def request_entity_too_large(error):
+
     return jsonify({
         "error":
             (
@@ -2027,6 +2105,7 @@ def request_entity_too_large(error):
 
 @app.errorhandler(404)
 def not_found(error):
+
     return jsonify({
         "error":
             "The requested endpoint was not found.",
@@ -2041,6 +2120,7 @@ def not_found(error):
 
 @app.errorhandler(405)
 def method_not_allowed(error):
+
     return jsonify({
         "error":
             "The requested method is not allowed."
@@ -2053,6 +2133,7 @@ def method_not_allowed(error):
 
 @app.errorhandler(500)
 def internal_server_error(error):
+
     print(
         "Unhandled server error:",
         repr(error)
@@ -2065,13 +2146,15 @@ def internal_server_error(error):
 
 
 # ============================================================
-# INITIALIZE DATABASE TABLES
+# INITIALIZE DATABASE
 # ============================================================
 
 try:
+
     initialize_pdf_storage()
 
 except Exception as error:
+
     print(
         "Startup PDF storage initialization error:",
         repr(error)
@@ -2083,6 +2166,7 @@ except Exception as error:
 # ============================================================
 
 if __name__ == "__main__":
+
     app.run(
         host="127.0.0.1",
         port=5000,
