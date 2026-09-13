@@ -619,6 +619,619 @@ def health():
     }), 200
 
 # ============================================================
+# AUTHENTICATION HELPERS
+# ============================================================
+
+def get_user_by_email(email):
+
+    connection = get_db_connection()
+
+    if connection is None:
+        return None
+
+    cursor = None
+
+    try:
+
+        cursor = connection.cursor(
+            dictionary=True
+        )
+
+        cursor.execute(
+            """
+            SELECT
+                id,
+                name,
+                email,
+                password_hash,
+                created_at
+            FROM users
+            WHERE email = %s
+            LIMIT 1
+            """,
+            (email,)
+        )
+
+        user = cursor.fetchone()
+
+        return user
+
+    except Error as error:
+
+        print(
+            "Get user by email error:",
+            repr(error)
+        )
+
+        return None
+
+    finally:
+
+        if cursor:
+
+            try:
+                cursor.close()
+            except Exception:
+                pass
+
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
+def get_user_by_id(user_id):
+
+    connection = get_db_connection()
+
+    if connection is None:
+        return None
+
+    cursor = None
+
+    try:
+
+        cursor = connection.cursor(
+            dictionary=True
+        )
+
+        cursor.execute(
+            """
+            SELECT
+                id,
+                name,
+                email,
+                password_hash,
+                created_at
+            FROM users
+            WHERE id = %s
+            LIMIT 1
+            """,
+            (user_id,)
+        )
+
+        user = cursor.fetchone()
+
+        return user
+
+    except Error as error:
+
+        print(
+            "Get user by ID error:",
+            repr(error)
+        )
+
+        return None
+
+    finally:
+
+        if cursor:
+
+            try:
+                cursor.close()
+            except Exception:
+                pass
+
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
+def public_user(user):
+
+    if not user:
+        return None
+
+    created_at = user.get(
+        "created_at"
+    )
+
+    if isinstance(
+        created_at,
+        datetime
+    ):
+
+        created_at = (
+            created_at.isoformat()
+        )
+
+    return {
+        "id":
+            user.get("id"),
+        "name":
+            user.get("name"),
+        "email":
+            user.get("email"),
+        "created_at":
+            created_at
+    }
+
+
+def create_access_token(user):
+
+    now = datetime.now(
+        timezone.utc
+    )
+
+    expiration = (
+        now
+        + timedelta(
+            minutes=JWT_EXPIRATION_MINUTES
+        )
+    )
+
+    payload = {
+        "user_id":
+            user["id"],
+        "email":
+            user["email"],
+        "iat":
+            now,
+        "exp":
+            expiration
+    }
+
+    token = jwt.encode(
+        payload,
+        JWT_SECRET_KEY,
+        algorithm="HS256"
+    )
+
+    return token
+
+
+def get_current_user():
+
+    authorization = request.headers.get(
+        "Authorization",
+        ""
+    ).strip()
+
+    if not authorization:
+
+        return None, (
+            jsonify({
+                "error":
+                    "Authorization token is required."
+            }),
+            401
+        )
+
+    if not authorization.lower().startswith(
+        "bearer "
+    ):
+
+        return None, (
+            jsonify({
+                "error":
+                    "Invalid authorization header."
+            }),
+            401
+        )
+
+    token = authorization[7:].strip()
+
+    if not token:
+
+        return None, (
+            jsonify({
+                "error":
+                    "Authorization token is missing."
+            }),
+            401
+        )
+
+    try:
+
+        payload = jwt.decode(
+            token,
+            JWT_SECRET_KEY,
+            algorithms=["HS256"]
+        )
+
+        user_id = payload.get(
+            "user_id"
+        )
+
+        if not user_id:
+
+            return None, (
+                jsonify({
+                    "error":
+                        "Invalid authorization token."
+                }),
+                401
+            )
+
+        user = get_user_by_id(
+            user_id
+        )
+
+        if not user:
+
+            return None, (
+                jsonify({
+                    "error":
+                        "User account was not found."
+                }),
+                401
+            )
+
+        return user, None
+
+    except jwt.ExpiredSignatureError:
+
+        return None, (
+            jsonify({
+                "error":
+                    "Your session has expired. Please log in again."
+            }),
+            401
+        )
+
+    except jwt.InvalidTokenError:
+
+        return None, (
+            jsonify({
+                "error":
+                    "Invalid authorization token."
+            }),
+            401
+        )
+
+    except Exception as error:
+
+        print(
+            "Authentication error:",
+            repr(error)
+        )
+
+        return None, (
+            jsonify({
+                "error":
+                    "Unable to authenticate your account."
+            }),
+            401
+        )
+
+
+# ============================================================
+# REGISTER
+# ============================================================
+
+@app.route(
+    "/api/auth/register",
+    methods=["POST", "OPTIONS"]
+)
+def register():
+
+    if request.method == "OPTIONS":
+
+        return jsonify({
+            "message":
+                "CORS preflight successful."
+        }), 200
+
+    data = request.get_json(
+        silent=True
+    )
+
+    if not data:
+
+        return jsonify({
+            "error":
+                "Please provide your registration details."
+        }), 400
+
+    name = str(
+        data.get(
+            "name",
+            ""
+        )
+    ).strip()
+
+    email = str(
+        data.get(
+            "email",
+            ""
+        )
+    ).strip().lower()
+
+    password = str(
+        data.get(
+            "password",
+            ""
+        )
+    )
+
+    if not name:
+
+        return jsonify({
+            "error":
+                "Name is required."
+        }), 400
+
+    if not email:
+
+        return jsonify({
+            "error":
+                "Email is required."
+        }), 400
+
+    if not password:
+
+        return jsonify({
+            "error":
+                "Password is required."
+        }), 400
+
+    if len(password) < 6:
+
+        return jsonify({
+            "error":
+                "Password must contain at least 6 characters."
+        }), 400
+
+    existing_user = get_user_by_email(
+        email
+    )
+
+    if existing_user:
+
+        return jsonify({
+            "error":
+                "An account with this email already exists."
+        }), 409
+
+    password_hash = generate_password_hash(
+        password
+    )
+
+    connection = get_db_connection()
+
+    if connection is None:
+
+        return jsonify({
+            "error":
+                "Could not connect to the database."
+        }), 500
+
+    cursor = None
+
+    try:
+
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO users (
+                name,
+                email,
+                password_hash
+            )
+            VALUES (
+                %s,
+                %s,
+                %s
+            )
+            """,
+            (
+                name,
+                email,
+                password_hash
+            )
+        )
+
+        user_id = cursor.lastrowid
+
+        connection.commit()
+
+        user = get_user_by_id(
+            user_id
+        )
+
+        if not user:
+
+            return jsonify({
+                "error":
+                    "Account was created, but could not be loaded."
+            }), 500
+
+        token = create_access_token(
+            user
+        )
+
+        return jsonify({
+            "message":
+                "Account created successfully.",
+            "token":
+                token,
+            "user":
+                public_user(user)
+        }), 201
+
+    except Error as error:
+
+        print(
+            "Registration database error:",
+            repr(error)
+        )
+
+        try:
+            connection.rollback()
+        except Exception:
+            pass
+
+        return jsonify({
+            "error":
+                "Could not create your account."
+        }), 500
+
+    finally:
+
+        if cursor:
+
+            try:
+                cursor.close()
+            except Exception:
+                pass
+
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+
+# ============================================================
+# LOGIN
+# ============================================================
+
+@app.route(
+    "/api/auth/login",
+    methods=["POST", "OPTIONS"]
+)
+def login():
+
+    if request.method == "OPTIONS":
+
+        return jsonify({
+            "message":
+                "CORS preflight successful."
+        }), 200
+
+    data = request.get_json(
+        silent=True
+    )
+
+    if not data:
+
+        return jsonify({
+            "error":
+                "Please provide your login details."
+        }), 400
+
+    email = str(
+        data.get(
+            "email",
+            ""
+        )
+    ).strip().lower()
+
+    password = str(
+        data.get(
+            "password",
+            ""
+        )
+    )
+
+    if not email:
+
+        return jsonify({
+            "error":
+                "Email is required."
+        }), 400
+
+    if not password:
+
+        return jsonify({
+            "error":
+                "Password is required."
+        }), 400
+
+    user = get_user_by_email(
+        email
+    )
+
+    if not user:
+
+        return jsonify({
+            "error":
+                "Invalid email or password."
+        }), 401
+
+    try:
+
+        password_valid = check_password_hash(
+            user["password_hash"],
+            password
+        )
+
+    except Exception as error:
+
+        print(
+            "Password verification error:",
+            repr(error)
+        )
+
+        return jsonify({
+            "error":
+                "Unable to verify your password."
+        }), 500
+
+    if not password_valid:
+
+        return jsonify({
+            "error":
+                "Invalid email or password."
+        }), 401
+
+    token = create_access_token(
+        user
+    )
+
+    return jsonify({
+        "message":
+            "Login successful.",
+        "token":
+            token,
+        "user":
+            public_user(user)
+    }), 200
+
+
+# ============================================================
+# CURRENT USER
+# ============================================================
+
+@app.route(
+    "/api/auth/me",
+    methods=["GET"]
+)
+def auth_me():
+
+    user, error_response = get_current_user()
+
+    if error_response:
+        return error_response
+
+    return jsonify({
+        "user":
+            public_user(user)
+    }), 200
+
+
+# ============================================================
 # UPLOAD PDF
 # ============================================================
 
